@@ -121,9 +121,22 @@ It is read from the environment or a `KEY=VALUE` file, and from nowhere else. It
 
 **Telegram allows exactly one `getUpdates` consumer per bot token.** Everything else here is forgiving; this is not, and it is the failure that looks like an outage and is not.
 
-The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env` whenever a session has that channel enabled. If courier reads the same file, the two fight: whoever polls second gets `409 Conflict`, and inbound messages are split arbitrarily between them. The log names this case explicitly. The way out is to give courier its own bot — create one in @BotFather, add it to the group as an administrator, and start courier with `TELEGRAM_BOT_TOKEN` set in its environment.
+This is not theoretical — it happened. The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env`, and it starts **on every session start**, not once. So each new Claude Code session took the token back, courier's poll began returning `409 Conflict`, and every message written in the group from then on went to the plugin instead. Sending kept working, which is what makes it disorienting: the daemon looks alive, the topics fill up, and replies simply never arrive.
 
-Sending is unaffected either way; several bots may post into the same group.
+The cure was to disable the plugin (`telegram@claude-plugins-official`). The alternative, if you want both, is to give courier its own bot: create one in @BotFather, add it to the group as an administrator with `can_manage_topics`, and start courier with `TELEGRAM_BOT_TOKEN` set in its own environment. Sending is unaffected either way — several bots may post into the same group.
+
+**`/api/healthz` is what finds this.** A channel that loses its poll goes to `Failed`, health flips to `degraded`, and the channel's `status.message` names the conflict. Check it before assuming the group is quiet:
+
+```sh
+curl -s localhost:7717/api/healthz
+{"status":"degraded","channels":1,"degraded":["telegram: Failed"], ...}
+```
+
+## What a deletion does not do
+
+Deleting a message in Telegram does not retract it from an agent that already received it. The message disappears from the topic, and the agent still has it in its conversation, because the Bot API delivers no deletion event a bot could act on — courier never learns it happened.
+
+So a message is committed the moment it is sent. If you wrote something you did not mean, say the next thing rather than deleting the last one: the agent read the first version and will not see it vanish.
 
 ## Restarts
 
