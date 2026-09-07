@@ -144,18 +144,48 @@ type ConversationSpec struct {
 	// Closed asks the daemon to close the thread. Closing is a spec field
 	// rather than a delete so the record and its answers survive.
 	Closed bool `json:"closed,omitempty"`
+	// Agent, when set, is where the machine side of this conversation lives, so
+	// that a message the human writes is pushed to it instead of waiting to be
+	// collected. Without it the conversation still works — the agent just has
+	// to ask, and a message sent while it is thinking sits unread until it does.
+	Agent *AgentRef `json:"agent,omitempty"`
+}
+
+// AgentRef addresses the machine side of a conversation.
+type AgentRef struct {
+	// Sink names a registered delivery mechanism, e.g. "claude".
+	Sink string `json:"sink"`
+	// Address is the agent's address within that sink.
+	Address string `json:"address"`
 }
 
 // ConversationStatus is what the daemon observed.
 type ConversationStatus struct {
 	Phase Phase `json:"phase,omitempty"`
 	// Ref is the backend's own identifier for the thread (a topic id).
-	Ref             string     `json:"ref,omitempty"`
-	Message         string     `json:"message,omitempty"`
-	OpenedAt        *time.Time `json:"openedAt,omitempty"`
-	LastActivityAt  *time.Time `json:"lastActivityAt,omitempty"`
-	MessageCount    int        `json:"messageCount,omitempty"`
-	PendingQuestion string     `json:"pendingQuestion,omitempty"`
+	Ref            string     `json:"ref,omitempty"`
+	Message        string     `json:"message,omitempty"`
+	OpenedAt       *time.Time `json:"openedAt,omitempty"`
+	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
+	MessageCount   int        `json:"messageCount,omitempty"`
+	// PendingQuestion names the outbound Message currently waiting on an
+	// answer, so the next thing the human writes has somewhere to land — and so
+	// a second question can be refused rather than quietly stealing the first
+	// one's answer.
+	PendingQuestion string `json:"pendingQuestion,omitempty"`
+	// Agent describes the resolved machine side, as observed.
+	Agent *AgentStatus `json:"agent,omitempty"`
+}
+
+// AgentStatus is what the daemon observed about the conversation's agent.
+type AgentStatus struct {
+	Address string `json:"address,omitempty"`
+	Name    string `json:"name,omitempty"`
+	// Reachable is false once a delivery has failed, with Message saying why.
+	Reachable bool   `json:"reachable"`
+	Message   string `json:"message,omitempty"`
+	// LastDeliveryAt is when a message was last pushed to the agent.
+	LastDeliveryAt *time.Time `json:"lastDeliveryAt,omitempty"`
 }
 
 // Direction says which way a message travels.

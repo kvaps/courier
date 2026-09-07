@@ -143,13 +143,23 @@ type Sink interface {
 	SetStatus(ctx context.Context, channel string, phase api.Phase, message string)
 }
 
+// Env is what the daemon provides a backend beyond its own configuration.
+type Env struct {
+	// Channel is the resource name of the channel being built.
+	Channel string
+	// StateDir is a directory the backend may keep private state in, such as a
+	// stream cursor. It exists and is writable. Nothing in it is part of the
+	// API, and the daemon never reads it.
+	StateDir string
+}
+
 // Factory builds a backend from a channel's configuration.
 //
 // It is given the raw config so each backend owns its own schema and its own
 // validation — including the rule that matters most here: a credential must be
 // named, never inlined. A config carrying a literal token is rejected, because
 // the object would then be readable through the API and persisted to disk.
-type Factory func(channel string, config json.RawMessage) (Backend, error)
+type Factory func(env Env, config json.RawMessage) (Backend, error)
 
 var (
 	registryMu sync.RWMutex
@@ -169,18 +179,14 @@ func Register(kind string, f Factory) {
 }
 
 // New builds a backend for a channel.
-func New(kind, channel string, config json.RawMessage) (Backend, error) {
+func New(kind string, env Env, config json.RawMessage) (Backend, error) {
 	registryMu.RLock()
 	f, ok := registry[kind]
 	registryMu.RUnlock()
 	if !ok {
 		return nil, api.NewInvalid("unknown backend %q; registered: %v", kind, Kinds())
 	}
-	b, err := f(channel, config)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return f(env, config)
 }
 
 // Kinds lists the registered backend names, sorted.
