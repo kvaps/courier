@@ -33,11 +33,13 @@ func (s *Server) watchAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request, kind string) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeErr(w, api.NewInternalError("this connection cannot stream"))
-		return
-	}
+	// http.ResponseController, not a w.(http.Flusher) assertion: the logging
+	// middleware wraps the writer, and a direct assertion does not look through
+	// a wrapper's Unwrap. Asserting here silently disabled the whole watch
+	// endpoint, which looked exactly like "nothing is happening".
+	rc := http.NewResponseController(w)
+	flush := func() bool { return rc.Flush() == nil }
+
 	since, err := parseVersion(r.URL.Query().Get("resourceVersion"))
 	if err != nil {
 		writeErr(w, err)
@@ -57,7 +59,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, kind string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if !flush() {
+		return
+	}
 
 	enc := json.NewEncoder(w)
 	// A keepalive so an idle stream does not look dead to anything counting
@@ -73,7 +77,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, kind string) {
 			if _, err := w.Write([]byte("\n")); err != nil {
 				return
 			}
-			flusher.Flush()
+			flush()
 		case ev, open := <-events:
 			if !open {
 				// The store dropped this watcher for falling behind. Say so in
@@ -86,13 +90,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, kind string) {
 					return
 				}
 				_ = enc.Encode(api.WatchEvent{Type: api.Error, Object: raw})
-				flusher.Flush()
+				flush()
 				return
 			}
 			if err := enc.Encode(api.WatchEvent{Type: ev.Type, Object: ev.Object}); err != nil {
 				return
 			}
-			flusher.Flush()
+			flush()
 		}
 	}
 }

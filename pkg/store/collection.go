@@ -49,6 +49,18 @@ func (c *Collection[T, PT]) getLocked(name string) (PT, error) {
 	return c.decode(rec.raw)
 }
 
+// clone returns an independent copy, so stamping identity and versions onto an
+// object never reaches through into the caller's own value. A caller that holds
+// its copy for a retry, or reads it after the write, should see what it built —
+// not what the store did to it.
+func (c *Collection[T, PT]) clone(obj PT) (PT, error) {
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return nil, api.NewInternalError("copy %s: %v", c.kind, err)
+	}
+	return c.decode(raw)
+}
+
 func (c *Collection[T, PT]) decode(raw json.RawMessage) (PT, error) {
 	obj := PT(new(T))
 	if err := json.Unmarshal(raw, obj); err != nil {
@@ -78,7 +90,12 @@ func (c *Collection[T, PT]) List() ([]T, int64, error) {
 
 // Create stores a new object, assigning its name (from GenerateName when the
 // name is empty), uid, creation time, generation and resource version.
-func (c *Collection[T, PT]) Create(obj PT) (PT, error) {
+func (c *Collection[T, PT]) Create(in PT) (PT, error) {
+	obj, err := c.clone(in)
+	if err != nil {
+		return nil, err
+	}
+
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 
@@ -126,7 +143,12 @@ func (c *Collection[T, PT]) UpdateStatus(obj PT) (PT, error) {
 	return c.update(obj, false)
 }
 
-func (c *Collection[T, PT]) update(obj PT, bumpGeneration bool) (PT, error) {
+func (c *Collection[T, PT]) update(in PT, bumpGeneration bool) (PT, error) {
+	obj, err := c.clone(in)
+	if err != nil {
+		return nil, err
+	}
+
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 
