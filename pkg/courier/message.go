@@ -283,17 +283,27 @@ func (s *Service) push(conv *api.Conversation, stored *api.Message, in backend.I
 	}
 }
 
-// envelope is what the agent reads. It says who is writing and where, so the
-// agent knows the message came from a person through courier and where an
-// answer should go — rather than courier pretending to be a session, which
-// would give the agent a return address that nobody is listening on.
+// envelope is what the agent reads. It says who is writing and how to answer,
+// so the message is recognisably from a person via courier — rather than
+// courier pretending to be a session, which would hand the agent a return
+// address nobody is listening on.
+//
+// The last paragraph is not boilerplate. Without it an agent that has no
+// courier tools goes looking for another way to reply — a peer message to
+// something named after the conversation, typically — and reports the channel
+// as broken when the real answer is that nobody configured it. Naming the tools
+// and the conversation, and saying plainly what to do when they are absent,
+// turns that into one accurate sentence back to the operator.
 func (s *Service) envelope(conv *api.Conversation, in backend.Inbound) string {
 	from := in.Author
 	if from == "" {
 		from = "the operator"
 	}
 	return fmt.Sprintf(
-		"[courier] %s wrote in %q:\n\n%s\n\n(Reply with the courier MCP tools, conversation %q — anything you write there reaches them.)",
+		"[courier] %s wrote to you in %q:\n\n%s\n\n"+
+			"To answer, call the courier MCP tool `send` (or `ask`, if you need a decision back) with conversation=%q. "+
+			"If you have no courier tools, courier is not registered as an MCP server for this session — say that plainly rather than "+
+			"looking for another channel; there is no other way back.",
 		from, conv.Spec.Title, in.Text, conv.Metadata.Name)
 }
 

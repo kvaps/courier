@@ -109,8 +109,11 @@ func findTranscript(js *jobState, sid string) string {
 	return newest
 }
 
+// nonce is exactly eight hex characters. The daemon validates it against
+// /^[a-f0-9]{8}$/ and rejects the whole dispatch as "malformed request: Invalid
+// input" otherwise — with no hint as to which field was wrong.
 func nonce() string {
-	var b [8]byte
+	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "00000000"
 	}
@@ -151,12 +154,15 @@ func (c control) wake(short string) error {
 		launch["transcriptPath"] = p
 	}
 	desc := map[string]any{
-		"proto":        1,
-		"short":        short,
-		"nonce":        nonce(),
-		"sessionId":    js.SessionID,
-		"createdAt":    time.Now().UnixMilli(),
-		"source":       "courier",
+		"proto":     1,
+		"short":     short,
+		"nonce":     nonce(),
+		"sessionId": js.SessionID,
+		"createdAt": time.Now().UnixMilli(),
+		// The daemon accepts only shell | slash | fleet | spare | respawn here.
+		// Anything else — a name identifying us, say — is refused as a malformed
+		// request. "fleet" is what the agents view itself dispatches as.
+		"source":       "fleet",
 		"cwd":          js.Cwd,
 		"launch":       launch,
 		"env":          map[string]any{},
