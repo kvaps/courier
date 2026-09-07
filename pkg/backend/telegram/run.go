@@ -37,7 +37,9 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 		ups, err := b.api.getUpdates(ctx, offset, b.cfg.PollTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				// Shutdown cancelled the poll; that is a clean stop, not a
+				// transport failure worth reporting as one.
+				return nil //nolint:nilerr // ctx cancellation is the caller's own doing
 			}
 			if isConflict(err) {
 				conflicts++

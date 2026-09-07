@@ -54,7 +54,7 @@ type StatusError struct {
 
 func (e *StatusError) Error() string { return e.Status.Message }
 
-// Reason returns the failure's machine-readable cause, or ReasonInternalError
+// ReasonOf returns the failure's machine-readable cause, or ReasonInternalError
 // for an error that is not a StatusError — an unclassified failure is a bug on
 // this side by definition.
 func ReasonOf(err error) Reason {
@@ -120,6 +120,13 @@ func NewConflict(kind, name string, have, want int64) error {
 	return newErr(ReasonConflict, http.StatusConflict,
 		"%s %q has been modified: resourceVersion is %d, you sent %d — re-read the object and retry",
 		kind, name, have, want)
+}
+
+// NewConflictf reports a conflict whose explanation is not a version mismatch —
+// a rule that two concurrent intents cannot both hold, such as a second question
+// in a conversation already waiting on an answer.
+func NewConflictf(format string, args ...any) error {
+	return newErr(ReasonConflict, http.StatusConflict, format, args...)
 }
 
 // NewInvalid reports a rule violation in a well-formed object.
