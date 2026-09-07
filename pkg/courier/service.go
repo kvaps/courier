@@ -105,6 +105,7 @@ func (s *Service) activate(ctx context.Context, ch *api.Channel) error {
 	be, err := backend.New(ch.Spec.Backend, backend.Env{
 		Channel:  ch.Metadata.Name,
 		StateDir: filepath.Join(s.stateDir, "backends", ch.Metadata.Name),
+		InboxDir: filepath.Join(s.stateDir, "inbox", ch.Metadata.Name),
 	}, ch.Spec.Config)
 	if err != nil {
 		s.markChannel(ch.Metadata.Name, api.PhaseFailed, "", "", err.Error())

@@ -80,9 +80,10 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// Empty reports whether a body would render to nothing, which is the one thing
-// a message must never be: an empty message wastes a notification and, on a
-// question, leaves the reader nothing to answer.
+// Empty reports whether a body would render to nothing. A message must never be
+// that: it wastes a notification and, on a question, leaves the reader nothing
+// to answer. A message carrying only a file is not empty — the file is the
+// content — which is why the caller checks attachments alongside this.
 func (b Body) Empty() bool {
 	return strings.TrimSpace(b.Context) == "" &&
 		strings.TrimSpace(b.Question) == "" &&

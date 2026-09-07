@@ -161,6 +161,12 @@ type tgMessage struct {
 	Text      string  `json:"text"`
 	Caption   string  `json:"caption"`
 
+	Document *tgFile       `json:"document"`
+	Photo    []tgPhotoSize `json:"photo"`
+	Video    *tgFile       `json:"video"`
+	Audio    *tgFile       `json:"audio"`
+	Voice    *tgFile       `json:"voice"`
+
 	// Forum housekeeping. These arrive as messages inside a topic; delivering
 	// one to an agent would seed it with an empty turn.
 	TopicCreated  any `json:"forum_topic_created"`

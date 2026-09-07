@@ -67,6 +67,7 @@ type Config struct {
 type Backend struct {
 	channel  string
 	stateDir string
+	inboxDir string
 	cfg      Config
 	api      *botAPI
 
@@ -118,6 +119,7 @@ func newBackend(env backend.Env, raw json.RawMessage) (backend.Backend, error) {
 	return &Backend{
 		channel:  env.Channel,
 		stateDir: env.StateDir,
+		inboxDir: env.InboxDir,
 		cfg:      cfg,
 		// The HTTP timeout must clear the long poll, or every poll would be
 		// cancelled client-side just before Telegram was about to answer it.
@@ -211,7 +213,14 @@ func (b *Backend) CloseThread(ctx context.Context, ref backend.ThreadRef) error 
 	return nil
 }
 
-// Send delivers text into a thread.
+// Send delivers a message, and any files with it, into a thread.
+//
+// Text and files go as separate messages rather than as one captioned upload.
+// It is a little noisier and much more predictable: a caption is capped at
+// 1024 characters where a rendered question often is not, and it keeps Edit —
+// which is how a withdrawn question is struck — always pointed at a text
+// message. The reference returned is the first message sent, so that is what
+// a withdrawal edits.
 func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.Outgoing) (backend.MessageRef, error) {
 	id, err := threadID(ref)
 	if err != nil {
@@ -224,27 +233,57 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		return backend.MessageRef{}, api.NewBackendError("telegram channel %s is not connected", b.channel)
 	}
 
+	var first backend.MessageRef
+	if strings.TrimSpace(out.Text) != "" {
+		msgID, serr := b.sendText(ctx, chatID, id, out.Text)
+		if serr != nil {
+			return backend.MessageRef{}, serr
+		}
+		first = backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}
+	}
+
+	for _, f := range out.Files {
+		name := f.Name
+		if name == "" {
+			name = filepath.Base(f.Path)
+		}
+		msgID, ferr := b.api.sendDocument(ctx, chatID, id, f.Path, name, "")
+		if ferr != nil {
+			return first, api.NewBackendError("telegram sendDocument %q: %v", name, ferr)
+		}
+		if first.Zero() {
+			first = backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}
+		}
+	}
+	if first.Zero() {
+		return backend.MessageRef{}, api.NewInvalid("nothing to send: no text and no files")
+	}
+	return first, nil
+}
+
+// sendText posts one text message, honouring a flood wait once. Telegram says
+// exactly how long to wait; ignoring it and retrying at once is how a bot earns
+// a longer ban.
+func (b *Backend) sendText(ctx context.Context, chatID int64, threadID int, text string) (int, error) {
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
-		msgID, err := b.api.sendMessage(ctx, chatID, id, out.Text, 0)
+		msgID, err := b.api.sendMessage(ctx, chatID, threadID, text, 0)
 		if err == nil {
-			return backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}, nil
+			return msgID, nil
 		}
 		last = err
 		var ae *apiError
 		if attempt == 0 && asAPIError(err, &ae) && ae.RetryAfter > 0 {
-			// Telegram says exactly how long to wait. Ignoring it and retrying
-			// immediately is how a bot earns a longer ban.
 			select {
 			case <-ctx.Done():
-				return backend.MessageRef{}, ctx.Err()
+				return 0, ctx.Err()
 			case <-time.After(time.Duration(ae.RetryAfter+1) * time.Second):
 			}
 			continue
 		}
 		break
 	}
-	return backend.MessageRef{}, api.NewBackendError("telegram sendMessage: %v", last)
+	return 0, api.NewBackendError("telegram sendMessage: %v", last)
 }
 
 // Edit replaces a sent message, which is how a withdrawn question stops looking

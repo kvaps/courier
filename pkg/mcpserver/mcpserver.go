@@ -64,7 +64,9 @@ func New(cfg Config) *mcp.Server {
 		Name: "send",
 		Description: "Send a message to the operator without asking for an answer: a status note, a heads-up, a finished result. " +
 			"For anything you need a decision on, use ask instead — it holds the question open and routes the reply back to you. " +
-			"Keep it short: this arrives as a phone notification, not a document.",
+			"Keep it short: this arrives as a phone notification, not a document.\n\n" +
+			"Attach files with `files` — absolute paths on this machine. They are uploaded, so the operator gets the screenshot or " +
+			"the log itself rather than a path they cannot open from their phone. A message may be nothing but files.",
 	}, h.send)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -77,6 +79,8 @@ func New(cfg Config) *mcp.Server {
 			"One question at a time per conversation: a second is refused while the first is open, because the operator answers by writing " +
 			"in the thread rather than by quoting, and two open questions would mean guessing which one a bare \"OK\" belongs to. " +
 			"If the question stops mattering, withdraw it with cancel rather than leaving it standing.\n\n" +
+			"Attach files with `files` (absolute paths): a screenshot or a diff is often what turns a question the operator has to " +
+			"go and investigate into one they can answer at a glance.\n\n" +
 			"Returns when the operator answers, or when wait_seconds runs out — a timeout is not a failure, it comes back still open " +
 			"and you can wait again with wait_for_answer.",
 	}, h.ask)
@@ -92,7 +96,8 @@ func New(cfg Config) *mcp.Server {
 		Description: "Collect what the operator has written in a conversation since you last looked, waiting for it if there is nothing yet. " +
 			"This is for messages that answer no question of yours — the operator writing unprompted. " +
 			"Pass the resource_version returned by your previous call to get exactly what you have not seen: nothing skipped, nothing repeated. " +
-			"On the first call leave it at 0 to start from now.",
+			"On the first call leave it at 0 to start from now.\n\n" +
+			"Files the operator sends are downloaded for you: each message's `spec.attachments[].path` is an ordinary local file you can read.",
 	}, h.receive)
 
 	mcp.AddTool(s, &mcp.Tool{

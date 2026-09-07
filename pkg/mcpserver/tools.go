@@ -81,19 +81,38 @@ func (h *server) closeConversation(ctx context.Context, _ *mcp.CallToolRequest, 
 type sendInput struct {
 	Conversation string `json:"conversation" jsonschema:"the conversation to write in"`
 	bodyInput
+	Files []string `json:"files,omitempty" jsonschema:"absolute paths of files to attach — a screenshot, a log, a diff. They are uploaded from this machine, so the operator gets the file itself rather than a path they cannot open"`
 }
 
 func (h *server) send(ctx context.Context, _ *mcp.CallToolRequest, in sendInput) (*mcp.CallToolResult, *api.Message, error) {
 	out, err := h.cfg.Service.Send(ctx, &api.Message{
-		Spec: api.MessageSpec{Conversation: in.Conversation, Body: in.body()},
+		Spec: api.MessageSpec{
+			Conversation: in.Conversation,
+			Body:         in.body(),
+			Attachments:  attachments(in.Files),
+		},
 	})
 	return nil, out, err
+}
+
+// attachments turns a list of paths into attachment records. Only the path is
+// taken from the caller; the daemon observes the rest.
+func attachments(paths []string) []api.Attachment {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]api.Attachment, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, api.Attachment{Path: p})
+	}
+	return out
 }
 
 type askInput struct {
 	Conversation string `json:"conversation" jsonschema:"the conversation to ask in"`
 	bodyInput
-	WaitSeconds int `json:"wait_seconds,omitempty" jsonschema:"how long to wait for the answer before returning the question still open; defaults to 300, capped at 1800"`
+	Files       []string `json:"files,omitempty" jsonschema:"absolute paths of files to attach to the question — a screenshot or a diff is often what makes a decision answerable at a glance"`
+	WaitSeconds int      `json:"wait_seconds,omitempty" jsonschema:"how long to wait for the answer before returning the question still open; defaults to 300, capped at 1800"`
 }
 
 // askResult is what an agent gets back: the message, plus the two things it
@@ -114,6 +133,7 @@ func (h *server) ask(ctx context.Context, _ *mcp.CallToolRequest, in askInput) (
 			Conversation: in.Conversation,
 			Body:         in.body(),
 			AwaitReply:   true,
+			Attachments:  attachments(in.Files),
 		},
 	})
 	if err != nil {

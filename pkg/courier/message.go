@@ -20,19 +20,24 @@ import (
 // belongs to. A second question is refused, naming the first and how to
 // withdraw it.
 func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error) {
-	if m.Spec.Body.Empty() {
-		return nil, api.NewInvalid("the message body is empty — there would be nothing to read and, on a question, nothing to answer")
+	if m.Spec.Body.Empty() && len(m.Spec.Attachments) == 0 {
+		return nil, api.NewInvalid("the message is empty — there would be nothing to read and, on a question, nothing to answer")
 	}
-	conv, err := s.conversations.Get(m.Spec.Conversation)
+	files, err := prepareAttachments(m.Spec.Attachments)
 	if err != nil {
 		return nil, err
+	}
+	m.Spec.Attachments = files
+	conv, cerr := s.conversations.Get(m.Spec.Conversation)
+	if cerr != nil {
+		return nil, cerr
 	}
 	if conv.Spec.Closed {
 		return nil, api.NewInvalid("conversation %q is closed", conv.Metadata.Name)
 	}
-	be, err := s.backendFor(conv.Spec.Channel)
-	if err != nil {
-		return nil, err
+	be, berr := s.backendFor(conv.Spec.Channel)
+	if berr != nil {
+		return nil, berr
 	}
 	if m.Spec.AwaitReply {
 		if pending, ok := s.openQuestion(conv); ok {
@@ -60,6 +65,7 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 		Text:       text,
 		Body:       created.Spec.Body,
 		AwaitReply: created.Spec.AwaitReply,
+		Files:      created.Spec.Attachments,
 	})
 	if err != nil {
 		created.Status.Phase = api.PhaseFailed
@@ -201,6 +207,7 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 			Direction:    api.Inbound,
 			Body:         api.Body{Text: in.Text},
 			InReplyTo:    answered,
+			Attachments:  in.Files,
 		},
 		Status: api.MessageStatus{
 			Phase:      api.PhaseSent,
@@ -299,12 +306,27 @@ func (s *Service) envelope(conv *api.Conversation, in backend.Inbound) string {
 	if from == "" {
 		from = "the operator"
 	}
+	body := in.Text
+	if len(in.Files) > 0 {
+		// The files are already on this machine, so the agent is told where
+		// they are rather than how to fetch them — it opens ordinary paths.
+		var b strings.Builder
+		if body != "" {
+			b.WriteString(body)
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Attached, already saved on this machine — read them as ordinary files:")
+		for _, f := range in.Files {
+			fmt.Fprintf(&b, "\n  %s  (%s, %s)", f.Path, f.Name, humanSize(f.Size))
+		}
+		body = b.String()
+	}
 	return fmt.Sprintf(
 		"[courier] %s wrote to you in %q:\n\n%s\n\n"+
 			"To answer, call the courier MCP tool `send` (or `ask`, if you need a decision back) with conversation=%q. "+
 			"If you have no courier tools, courier is not registered as an MCP server for this session — say that plainly rather than "+
 			"looking for another channel; there is no other way back.",
-		from, conv.Spec.Title, in.Text, conv.Metadata.Name)
+		from, conv.Spec.Title, body, conv.Metadata.Name)
 }
 
 func (s *Service) noteAgent(conversation string, reachable bool, message string) {

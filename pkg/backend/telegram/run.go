@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -92,15 +93,17 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 		log.Warn("refusing a message from a sender not in allowFrom", "from", msg.From.ID)
 		return
 	}
-	text := msg.body()
-	if text == "" {
-		return // a sticker, or a photo with no caption: nothing to deliver
-	}
-
 	ref := backend.ThreadRef("")
 	if msg.ThreadID > 0 {
 		ref = backend.ThreadRef(strconv.Itoa(msg.ThreadID))
 	}
+
+	files := b.download(ctx, msg, string(ref))
+	text := msg.body()
+	if text == "" && len(files) == 0 {
+		return // a sticker, or something with no content to carry
+	}
+
 	sink.Receive(ctx, b.channel, backend.Inbound{
 		Thread:   ref,
 		Ref:      backend.MessageRef{Thread: ref, ID: strconv.Itoa(msg.MessageID)},
@@ -108,7 +111,98 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 		AuthorID: strconv.FormatInt(msg.From.ID, 10),
 		Text:     text,
 		At:       time.Unix(msg.Date, 0).UTC(),
+		Files:    files,
 	})
+}
+
+// download fetches whatever the person attached, into the daemon's inbox.
+//
+// A file that cannot be fetched is logged and skipped rather than failing the
+// whole message: the caption may be the important half, and an agent that gets
+// the words without the screenshot is better off than one that gets neither.
+func (b *Backend) download(ctx context.Context, msg *tgMessage, thread string) []api.Attachment {
+	wanted := attached(msg)
+	if len(wanted) == 0 {
+		return nil
+	}
+	if b.inboxDir == "" {
+		b.logger().Warn("dropping attachments: this channel has no inbox directory")
+		return nil
+	}
+	dir := filepath.Join(b.inboxDir, sanitiseSegment(thread))
+
+	out := make([]api.Attachment, 0, len(wanted))
+	for _, w := range wanted {
+		path, size, err := b.api.fetch(ctx, w.FileID, w.FileName, dir)
+		if err != nil {
+			b.logger().Error("could not fetch an attachment", "name", w.FileName, "err", err)
+			continue
+		}
+		out = append(out, api.Attachment{
+			Path:      path,
+			Name:      displayName(w, path),
+			Size:      size,
+			MediaType: guessMediaType(path, w.MimeType),
+			Ref:       w.UniqueID,
+		})
+	}
+	return out
+}
+
+// attached flattens whatever file-bearing fields an update carries into one
+// list. A photo arrives as several renditions of the same image; only the
+// largest is worth having, since the smaller ones are Telegram's thumbnails.
+func attached(msg *tgMessage) []tgFile {
+	var out []tgFile
+	if msg.Document != nil {
+		out = append(out, *msg.Document)
+	}
+	for _, f := range []*tgFile{msg.Video, msg.Audio, msg.Voice} {
+		if f != nil {
+			out = append(out, *f)
+		}
+	}
+	if len(msg.Photo) > 0 {
+		best := msg.Photo[0]
+		for _, p := range msg.Photo[1:] {
+			if p.FileSize > best.FileSize {
+				best = p
+			}
+		}
+		out = append(out, tgFile{
+			FileID:   best.FileID,
+			UniqueID: best.UniqueID,
+			FileName: fmt.Sprintf("photo-%dx%d.jpg", best.Width, best.Height),
+			MimeType: "image/jpeg",
+			FileSize: best.FileSize,
+		})
+	}
+	return out
+}
+
+func displayName(f tgFile, path string) string {
+	if n := strings.TrimSpace(f.FileName); n != "" {
+		return filepath.Base(n)
+	}
+	return filepath.Base(path)
+}
+
+// sanitiseSegment keeps a thread id usable as one path segment. The id is a
+// number today, but it comes off the wire, and this path is created on disk.
+func sanitiseSegment(s string) string {
+	if s == "" {
+		return "general"
+	}
+	out := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, s)
+	if out == "" || strings.Trim(out, "_") == "" {
+		return "thread"
+	}
+	return out
 }
 
 // startOffset decides where inbound reading begins.

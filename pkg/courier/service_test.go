@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,8 +108,15 @@ func (f *fakeBackend) texts() []string {
 // say puts a message in the human's mouth, as the transport would deliver it.
 func (f *fakeBackend) say(t *testing.T, thread backend.ThreadRef, text string) {
 	t.Helper()
+	f.sayWith(t, thread, text, nil)
+}
+
+// sayWith is say plus attachments the transport has already downloaded.
+func (f *fakeBackend) sayWith(t *testing.T, thread backend.ThreadRef, text string, files []api.Attachment) {
+	t.Helper()
 	sink := f.waitSink(t)
 	sink.Receive(context.Background(), "chan", backend.Inbound{
+		Files:  files,
 		Thread: thread,
 		Ref:    backend.MessageRef{Thread: thread, ID: "in"},
 		Author: "@tester",
@@ -572,4 +581,125 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+func TestSendCarriesFilesToTheTransport(t *testing.T) {
+	svc, be, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	shot := tempFile(t, "screenshot.png", "pretend pixels")
+
+	sent, err := svc.Send(context.Background(), &api.Message{
+		Spec: api.MessageSpec{
+			Conversation: "a",
+			Body:         api.Body{Text: "here is what it looks like"},
+			Attachments:  []api.Attachment{{Path: shot}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.sent) != 1 || len(be.sent[0].Files) != 1 {
+		t.Fatalf("transport received %+v", be.sent)
+	}
+	f := be.sent[0].Files[0]
+	if f.Name != "screenshot.png" || f.Size == 0 || f.MediaType != "image/png" {
+		t.Errorf("the attachment reached the transport unobserved: %+v", f)
+	}
+	// And the record keeps it, so the conversation says what was actually sent.
+	if len(sent.Spec.Attachments) != 1 || sent.Spec.Attachments[0].Path != f.Path {
+		t.Errorf("the stored message lost its attachment: %+v", sent.Spec.Attachments)
+	}
+}
+
+// A screenshot with no words is a message. Refusing it would be refusing the
+// most natural thing a person does with their phone.
+func TestSendAllowsAMessageThatIsOnlyAFile(t *testing.T) {
+	svc, be, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	shot := tempFile(t, "shot.png", "pixels")
+
+	if _, err := svc.Send(context.Background(), &api.Message{
+		Spec: api.MessageSpec{Conversation: "a", Attachments: []api.Attachment{{Path: shot}}},
+	}); err != nil {
+		t.Fatalf("a file-only message was refused: %v", err)
+	}
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	if len(be.sent) != 1 || len(be.sent[0].Files) != 1 {
+		t.Fatalf("transport received %+v", be.sent)
+	}
+	// With nothing to say, there is nothing to render.
+	if strings.TrimSpace(be.sent[0].Text) != "" {
+		t.Errorf("an empty body rendered to %q", be.sent[0].Text)
+	}
+}
+
+func TestSendStillRefusesAnEmptyMessage(t *testing.T) {
+	svc, _, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	if _, err := svc.Send(context.Background(), &api.Message{
+		Spec: api.MessageSpec{Conversation: "a"},
+	}); err == nil {
+		t.Fatal("a message with neither words nor files was accepted")
+	}
+}
+
+func TestSendRefusesAFileThatIsNotThere(t *testing.T) {
+	svc, _, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	_, err := svc.Send(context.Background(), &api.Message{
+		Spec: api.MessageSpec{
+			Conversation: "a",
+			Body:         api.Body{Text: "attached"},
+			Attachments:  []api.Attachment{{Path: filepath.Join(t.TempDir(), "ghost.txt")}},
+		},
+	})
+	if err == nil {
+		t.Fatal("a missing file was accepted")
+	}
+	// Refused before anything was posted: the operator must not get a message
+	// announcing an attachment that never arrives.
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// Files the operator sends are already on this machine, so the agent is told
+// where they are rather than how to fetch them.
+func TestInboundFilesReachTheAgentAsPaths(t *testing.T) {
+	svc, be, sink := newService(t)
+	c := openConv(t, svc, "a", &api.AgentRef{Sink: "fake", Address: "worker-1"})
+	saved := tempFile(t, "abc-report.pdf", "%PDF-fake")
+
+	be.sayWith(t, backend.ThreadRef(c.Status.Ref), "take a look", []api.Attachment{{
+		Path: saved, Name: "report.pdf", Size: 9, MediaType: "application/pdf", Ref: "uniq1",
+	}})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(sink.got()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := sink.got()
+	if len(got) != 1 {
+		t.Fatalf("delivered %d messages", len(got))
+	}
+	for _, want := range []string{saved, "report.pdf", "read them as ordinary files"} {
+		if !contains(got[0], want) {
+			t.Errorf("the envelope does not mention %q:\n%s", want, got[0])
+		}
+	}
+
+	list, err := svc.ListMessages("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || len(list.Items[0].Spec.Attachments) != 1 {
+		t.Fatalf("the inbound message did not keep its attachment: %+v", list.Items)
+	}
+	if list.Items[0].Spec.Attachments[0].Path != saved {
+		t.Errorf("attachment = %+v", list.Items[0].Spec.Attachments[0])
+	}
 }

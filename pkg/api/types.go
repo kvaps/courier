@@ -220,6 +220,32 @@ type MessageSpec struct {
 	// InReplyTo names the outbound Message an inbound one answers. It is set by
 	// the daemon on inbound messages and is empty on outbound ones.
 	InReplyTo string `json:"inReplyTo,omitempty"`
+	// Attachments are files travelling with the message.
+	//
+	// Outbound, a client supplies Path and the daemon fills in the rest.
+	// Inbound, the daemon fills in everything: it downloads what the person
+	// sent and records where it put it, so an agent reads an ordinary local
+	// file rather than learning the transport's download protocol.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one file travelling with a message.
+//
+// Everything here is a path on this machine, because courier is local: both
+// sides of a conversation share a filesystem, and the daemon's job is to move
+// the bytes across the transport in between, not to invent a blob store.
+type Attachment struct {
+	// Path is the file on this machine. It is the only field a sender sets.
+	Path string `json:"path"`
+	// Name is what the reader sees, defaulting to the base name of Path.
+	Name string `json:"name,omitempty"`
+	// Size in bytes, filled in by the daemon.
+	Size int64 `json:"size,omitempty"`
+	// MediaType is the guessed content type, filled in by the daemon.
+	MediaType string `json:"mediaType,omitempty"`
+	// Ref is the transport's own identifier for the file, recorded on an
+	// inbound attachment so the same file can be recognised if it arrives again.
+	Ref string `json:"ref,omitempty"`
 }
 
 // Body is a message composed the way a colleague would text it: one decision,

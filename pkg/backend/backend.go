@@ -116,6 +116,10 @@ type Outgoing struct {
 	Body api.Body
 	// AwaitReply marks a question, which some transports can present specially.
 	AwaitReply bool
+	// Files travel with the message. Path is set and readable; a transport
+	// that cannot carry files reports NotSupported rather than dropping them
+	// silently, so the sender learns the file did not arrive.
+	Files []api.Attachment
 }
 
 // Inbound is one message observed from the human side.
@@ -130,6 +134,10 @@ type Inbound struct {
 	AuthorID string
 	Text     string
 	At       time.Time
+	// Files are what the person attached, already downloaded into InboxDir.
+	// The backend does the downloading because it holds the credential; the
+	// daemon only records where the bytes landed.
+	Files []api.Attachment
 }
 
 // Sink receives inbound traffic from a running backend.
@@ -151,6 +159,10 @@ type Env struct {
 	// stream cursor. It exists and is writable. Nothing in it is part of the
 	// API, and the daemon never reads it.
 	StateDir string
+	// InboxDir is where the backend saves files it receives. Unlike StateDir
+	// the daemon does read it: the paths a backend reports for inbound files
+	// are handed to agents, which open them as ordinary local files.
+	InboxDir string
 }
 
 // Factory builds a backend from a channel's configuration.

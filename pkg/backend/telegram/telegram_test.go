@@ -171,3 +171,108 @@ func TestServiceMessagesAreNotContent(t *testing.T) {
 		t.Errorf("caption fallback = %q", got)
 	}
 }
+
+// A filename off the wire is a hint, never a path: courier writes these files
+// to disk and then hands the paths to agents, so a name that steers the write
+// would be the whole game.
+//
+// The property asserted is the one that actually matters — joining the result
+// onto a directory stays in that directory. Note that "..") inside a longer name
+// is harmless: only a separator can escape, so the sanitiser removes those
+// rather than mangling every name that happens to contain two dots.
+func TestSafeNameCannotSteerTheWrite(t *testing.T) {
+	const dir = "/var/courier/inbox/41"
+	cases := []string{
+		"../../../../etc/passwd",
+		"/etc/passwd",
+		`..\..\windows\system32\config`,
+		"....//....//evil",
+		"with\x00null",
+		"..",
+		".",
+		"",
+		strings.Repeat("a", 500) + ".png",
+	}
+	for _, in := range cases {
+		got := safeName(in, "documents/file_123.bin", "AgADBAADq6cxG")
+		joined := filepath.Join(dir, got)
+		switch {
+		case filepath.Dir(joined) != dir:
+			t.Errorf("safeName(%q) = %q escapes its directory: %q", in, got, joined)
+		case strings.ContainsAny(got, `/\`):
+			t.Errorf("safeName(%q) = %q — contains a path separator", in, got)
+		case strings.HasPrefix(got, "."):
+			t.Errorf("safeName(%q) = %q — starts with a dot", in, got)
+		case strings.ContainsRune(got, 0):
+			t.Errorf("safeName(%q) = %q — contains a NUL", in, got)
+		case got == "":
+			t.Errorf("safeName(%q) produced an empty name", in)
+		case len(got) > 130:
+			t.Errorf("safeName(%q) = %d bytes", in, len(got))
+		}
+	}
+}
+
+// Two people sending "screenshot.png" must not overwrite each other.
+func TestSafeNameIsUniquePerFile(t *testing.T) {
+	a := safeName("screenshot.png", "photos/1.jpg", "AAAAAAAAAAA1")
+	b := safeName("screenshot.png", "photos/2.jpg", "BBBBBBBBBBB2")
+	if a == b {
+		t.Fatalf("both files got the name %q", a)
+	}
+	for _, n := range []string{a, b} {
+		if !strings.HasSuffix(n, "screenshot.png") {
+			t.Errorf("%q no longer reads as the original name", n)
+		}
+	}
+}
+
+// A photo arrives as several renditions; only the largest is worth keeping,
+// since the rest are Telegram's own thumbnails.
+func TestAttachedPicksTheLargestPhoto(t *testing.T) {
+	msg := &tgMessage{Photo: []tgPhotoSize{
+		{FileID: "small", Width: 90, Height: 60, FileSize: 1200},
+		{FileID: "big", Width: 1280, Height: 853, FileSize: 240000},
+		{FileID: "medium", Width: 320, Height: 213, FileSize: 9000},
+	}}
+	got := attached(msg)
+	if len(got) != 1 {
+		t.Fatalf("got %d files, want 1", len(got))
+	}
+	if got[0].FileID != "big" {
+		t.Errorf("picked %q", got[0].FileID)
+	}
+	if got[0].MimeType != "image/jpeg" {
+		t.Errorf("mime = %q", got[0].MimeType)
+	}
+}
+
+func TestAttachedFlattensEveryKind(t *testing.T) {
+	msg := &tgMessage{
+		Document: &tgFile{FileID: "d", FileName: "notes.md"},
+		Video:    &tgFile{FileID: "v"},
+		Voice:    &tgFile{FileID: "a"},
+	}
+	if got := attached(msg); len(got) != 3 {
+		t.Errorf("got %d files, want 3", len(got))
+	}
+	if got := attached(&tgMessage{Text: "no files here"}); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestSanitiseSegment(t *testing.T) {
+	for in, want := range map[string]string{
+		"41": "41",
+		"":   "general",
+		// Dots become underscores, and a name made only of them is not a name,
+		// so it degrades to a fixed segment rather than to something odd.
+		"../..": "thread",
+		"a/b":   "a_b",
+		"__":    "thread",
+	} {
+		if got := sanitiseSegment(in); got != want {
+			t.Errorf("sanitiseSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

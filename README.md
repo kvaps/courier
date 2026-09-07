@@ -69,6 +69,10 @@ The bot must be an **administrator** of the group, with topics enabled. Administ
 
 `ask` takes `context`, `question` and `proposal` as separate fields rather than one string. That is the whole design: an agent handed a free-form body writes a wall of jargon about a thread you have not seen in a week, and the shape of the input is the cheapest place to prevent it. `context` re-orients you in a line, `question` is a plain either/or, `proposal` is the agent's own recommended answer so you can reply with one word, and `progress` shows the end coming.
 
+**Files travel both ways.** `send` and `ask` take `files` — absolute paths on this machine, uploaded so the reader gets the screenshot or the log itself rather than a path they cannot open from a phone. A message may be nothing but a file. In the other direction, a file the person sends is downloaded before the agent hears about it: the message's `spec.attachments[].path` is an ordinary local file, and the envelope the agent receives names it. Telegram caps a bot at 50 MB up and 20 MB down; courier refuses anything larger up front, naming the file, rather than failing mid-upload.
+
+A received filename is a hint and never a path. Courier builds the name on disk itself — separators removed, prefixed with the file's id so two people sending `screenshot.png` do not overwrite each other — because these paths are handed to agents.
+
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
 
 ## The API
@@ -84,6 +88,8 @@ GET  /api/healthz                     health, and which channels are degraded
 GET  /api/v1/watch                    every kind, ?resourceVersion=N&kind=Message
 POST /mcp                             the tool set, over streamable HTTP
 ```
+
+Attachments are paths, not uploads: both sides of a conversation share a filesystem, so the API moves file names and the daemon moves the bytes across the transport in between. There is no blob store to run.
 
 Three kinds. A **Channel** is a configured transport. A **Conversation** is one thread — with a person on one side (`spec.channel`) and, optionally, a machine on the other (`spec.agent`). A **Message** is one item in it; a question is a message with `spec.awaitReply`, and your reply lands in its `status.answer`.
 
