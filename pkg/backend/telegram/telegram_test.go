@@ -73,10 +73,10 @@ func TestConfigDefaults(t *testing.T) {
 
 func TestChatRef(t *testing.T) {
 	cases := map[string]string{
-		"-1004405002039":              "-1004405002039",
+		"-1001234567890":              "-1001234567890",
 		"@some_group":                 "@some_group",
-		"https://t.me/c/4405002039/1": "-1004405002039",
-		"t.me/c/4405002039":           "-1004405002039",
+		"https://t.me/c/1234567890/1": "-1001234567890",
+		"t.me/c/1234567890":           "-1001234567890",
 		"https://t.me/some_group":     "@some_group",
 		"https://t.me/some_group/12":  "@some_group",
 	}

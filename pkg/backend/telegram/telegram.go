@@ -37,7 +37,7 @@ func init() { backend.Register(Kind, newBackend) }
 // would be readable through the API and written to the store as plain text, so
 // one is refused outright rather than accepted and redacted later.
 type Config struct {
-	// Chat is the destination: a numeric id ("-1004405002039"), a public
+	// Chat is the destination: a numeric id ("-1001234567890"), a public
 	// "@username", or a t.me link to either.
 	Chat string `json:"chat"`
 	// TokenFile is a KEY=VALUE file holding the bot token. Defaults to

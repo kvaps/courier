@@ -47,7 +47,7 @@ You reply `OK`. The agent's `ask` call returns with your words. If it had stoppe
 
 ```sh
 make build
-./courier serve --telegram-chat https://t.me/c/4405002039/1
+./courier serve --telegram-chat https://t.me/c/1234567890/1
 claude mcp add --transport http courier http://127.0.0.1:7717/mcp
 ```
 
