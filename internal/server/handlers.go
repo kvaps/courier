@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kvaps/courier/pkg/api"
+	"github.com/kvaps/courier/pkg/courier"
 )
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +159,41 @@ func (s *Server) cancelMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// draftBody is what the orchestrator offers the reader: who wrote the answers,
+// an optional line of framing, and the options themselves.
+type draftBody struct {
+	DraftedBy string       `json:"draftedBy"`
+	Context   string       `json:"context,omitempty"`
+	Text      string       `json:"text,omitempty"`
+	Choices   []api.Choice `json:"choices"`
+}
+
+// draftMessage offers a ready answer to an open question, as buttons the reader
+// can confirm with one tap.
+//
+// It lives on the HTTP API and has no MCP counterpart on purpose. The MCP tool
+// set is what an agent is handed; drawing an approval gate over your own
+// question is the gate dissolving, so the tool that draws it is not in the set
+// the asker holds.
+func (s *Server) draftMessage(w http.ResponseWriter, r *http.Request) {
+	var body draftBody
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	m, err := s.svc.Draft(r.Context(), r.PathValue("name"), courier.DraftRequest{
+		DraftedBy: body.DraftedBy,
+		Context:   body.Context,
+		Text:      body.Text,
+		Choices:   body.Choices,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
 }
 
 // awaitAnswer blocks until the question is settled or the timeout elapses. A

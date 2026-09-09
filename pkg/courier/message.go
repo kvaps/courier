@@ -20,7 +20,7 @@ import (
 // belongs to. A second question is refused, naming the first and how to
 // withdraw it.
 func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error) {
-	if m.Spec.Body.Empty() && len(m.Spec.Attachments) == 0 {
+	if m.Spec.Body.Empty() && len(m.Spec.Attachments) == 0 && len(m.Spec.Choices) == 0 {
 		return nil, api.NewInvalid("the message is empty — there would be nothing to read and, on a question, nothing to answer")
 	}
 	files, err := prepareAttachments(m.Spec.Attachments)
@@ -47,6 +47,17 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 				conv.Metadata.Name, pending.Metadata.Name, pending.Spec.Body.Summary())
 		}
 	}
+	// A message carrying buttons is a drafted answer, and it is only ever an
+	// answer to a question that is open right now. Quoting that question is what
+	// lets the reader see the two together without the daemon restating either.
+	var quoted backend.MessageRef
+	if len(m.Spec.Choices) > 0 {
+		q, derr := s.prepareDraft(conv, m)
+		if derr != nil {
+			return nil, derr
+		}
+		quoted = backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: q.Status.Ref}
+	}
 
 	m.TypeMeta = api.TypeMeta{APIVersion: api.Version, Kind: api.KindMessage}
 	m.Spec.Direction = api.Outbound
@@ -61,10 +72,16 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 	}
 
 	text := created.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), created.Spec.AwaitReply)
+	if len(created.Spec.Choices) > 0 {
+		text = api.RenderDraft(created.Spec.Body, created.Spec.DraftedBy, created.Spec.Choices,
+			s.choicePrompt(conv.Spec.Channel))
+	}
 	ref, err := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
 		Text:       text,
 		Body:       created.Spec.Body,
 		AwaitReply: created.Spec.AwaitReply,
+		Choices:    created.Spec.Choices,
+		ReplyTo:    quoted,
 		Files:      created.Spec.Attachments,
 	})
 	if err != nil {
@@ -89,24 +106,31 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 		c.Status.MessageCount++
 		if sent.Spec.AwaitReply {
 			c.Status.PendingQuestion = sent.Metadata.Name
+			c.Status.PendingQuestionSince = sent.Status.SentAt
 		}
 	})
 	return sent, nil
 }
 
-// Cancel withdraws a question that has not been answered.
+// Cancel withdraws a question that has not been answered, or a drafted answer
+// that has not been taken.
 //
 // Withdrawing edits the message the human is looking at, so a question that no
 // longer needs an answer stops looking like one that does. A transport that
 // cannot edit gets a short follow-up note instead — the point is that the
 // reader is told, not how.
+//
+// Withdrawing a question takes its drafted answers down with it. Leaving them
+// would leave a live keyboard under a question nobody is waiting on, and the
+// reader tapping it would be answering into nothing.
 func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message, error) {
 	m, err := s.messages.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	if !m.Open() {
-		return nil, api.NewInvalid("message %q is not an open question (phase %s)", name, m.Status.Phase)
+	if !m.Open() && !m.DraftOpen() {
+		return nil, api.NewInvalid("message %q is neither an open question nor a drafted answer still on offer (phase %s)",
+			name, m.Status.Phase)
 	}
 	conv, err := s.conversations.Get(m.Spec.Conversation)
 	if err != nil {
@@ -117,6 +141,11 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 	if note == "" {
 		note = "withdrawn"
 	}
+	if m.DraftOpen() {
+		s.retire(ctx, conv, m, note)
+		return s.messages.Get(name)
+	}
+	s.retireDrafts(ctx, conv, name, "the question it answered was withdrawn")
 	if be, berr := s.backendFor(conv.Spec.Channel); berr == nil && m.Status.Ref != "" {
 		ref := backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: m.Status.Ref}
 		struck := m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false) + "\n\n— " + note + " (no answer needed)"
@@ -139,6 +168,7 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 	s.touchConversation(conv.Metadata.Name, func(c *api.Conversation) {
 		if c.Status.PendingQuestion == name {
 			c.Status.PendingQuestion = ""
+			c.Status.PendingQuestionSince = nil
 		}
 	})
 	return cancelled, nil
@@ -197,7 +227,7 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 	}
 	s.mark(ctx, conv, in.Ref, backend.MarkSeen)
 
-	answered := s.recordAnswer(conv, in)
+	answered := s.recordAnswer(ctx, conv, in)
 
 	msg := &api.Message{
 		TypeMeta: api.TypeMeta{APIVersion: api.Version, Kind: api.KindMessage},
@@ -232,7 +262,13 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 
 // recordAnswer lands an inbound message on the conversation's open question, if
 // there is one, and returns that question's name.
-func (s *Service) recordAnswer(conv *api.Conversation, in backend.Inbound) string {
+//
+// Words the reader typed settle the question exactly as a tapped button would,
+// which is the point: buttons are an offer laid over the ordinary way of
+// answering, never a replacement for it. Because they are only an offer, one
+// still standing when the reader writes instead has to come down — otherwise a
+// decided question keeps a live keyboard under it.
+func (s *Service) recordAnswer(ctx context.Context, conv *api.Conversation, in backend.Inbound) string {
 	q, ok := s.openQuestion(conv)
 	if !ok {
 		return ""
@@ -249,7 +285,15 @@ func (s *Service) recordAnswer(conv *api.Conversation, in backend.Inbound) strin
 		s.log.Error("could not record an answer", "message", q.Metadata.Name, "err", err)
 		return ""
 	}
-	s.touchConversation(conv.Metadata.Name, func(c *api.Conversation) { c.Status.PendingQuestion = "" })
+	s.touchConversation(conv.Metadata.Name, func(c *api.Conversation) {
+		c.Status.PendingQuestion = ""
+		c.Status.PendingQuestionSince = nil
+	})
+	// After the answer is recorded, not before: the waiting agent should not be
+	// held up by a round trip to the transport. A button pressed in the window
+	// between the two is refused on the question's own state, which is already
+	// settled — the edit is what the reader sees, not what makes it true.
+	s.retireDrafts(ctx, conv, q.Metadata.Name, "answered in the reader's own words")
 	return q.Metadata.Name
 }
 
@@ -266,7 +310,7 @@ func (s *Service) push(conv *api.Conversation, stored *api.Message, in backend.I
 	if err == nil {
 		var receipt agent.Receipt
 		receipt, err = sink.Deliver(ctx, conv.Spec.Agent.Address, agent.Message{
-			Text:         s.envelope(conv, in),
+			Text:         s.envelope(conv, stored, in),
 			Conversation: conv.Metadata.Name,
 		})
 		if err == nil {
@@ -301,7 +345,7 @@ func (s *Service) push(conv *api.Conversation, stored *api.Message, in backend.I
 // as broken when the real answer is that nobody configured it. Naming the tools
 // and the conversation, and saying plainly what to do when they are absent,
 // turns that into one accurate sentence back to the operator.
-func (s *Service) envelope(conv *api.Conversation, in backend.Inbound) string {
+func (s *Service) envelope(conv *api.Conversation, stored *api.Message, in backend.Inbound) string {
 	from := in.Author
 	if from == "" {
 		from = "the operator"
@@ -321,12 +365,24 @@ func (s *Service) envelope(conv *api.Conversation, in backend.Inbound) string {
 		}
 		body = b.String()
 	}
+	lead := fmt.Sprintf("%s wrote to you in %q:", from, conv.Spec.Title)
+	if a := stored.Status.Approval; a != nil {
+		// Said plainly, and not only in a field beside the text, because this is
+		// the sentence that stops a confirmed draft from being read as the
+		// operator's own reasoning. One tap is a cheap thing to have obtained,
+		// and an answer that turns out to be wrong has to be traceable to
+		// whoever actually composed it.
+		lead = fmt.Sprintf(
+			"%s approved an answer in %q. These are not their own words: %s drafted them, and %s confirmed the draft "+
+				"by choosing %q — one tap, not a reply they composed. Weigh it accordingly.",
+			from, conv.Spec.Title, a.DraftedBy, from, a.Label)
+	}
 	return fmt.Sprintf(
-		"[courier] %s wrote to you in %q:\n\n%s\n\n"+
+		"[courier] %s\n\n%s\n\n"+
 			"To answer, call the courier MCP tool `send` (or `ask`, if you need a decision back) with conversation=%q. "+
 			"If you have no courier tools, courier is not registered as an MCP server for this session — say that plainly rather than "+
 			"looking for another channel; there is no other way back.",
-		from, conv.Spec.Title, body, conv.Metadata.Name)
+		lead, body, conv.Metadata.Name)
 }
 
 func (s *Service) noteAgent(conversation string, reachable bool, message string) {

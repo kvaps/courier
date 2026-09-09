@@ -116,6 +116,16 @@ type Outgoing struct {
 	Body api.Body
 	// AwaitReply marks a question, which some transports can present specially.
 	AwaitReply bool
+	// Choices, when set, are the buttons to draw under the message, in order.
+	// A transport without buttons reports NotSupported rather than delivering
+	// the text alone: a drafted answer whose buttons silently vanished would
+	// look to the reader like an ordinary message and to the drafter like a
+	// live offer nobody ever took.
+	Choices []api.Choice
+	// ReplyTo, when set, asks the transport to attach this message to one it
+	// already delivered, so a drafted answer arrives quoting the question it
+	// answers instead of needing the daemon to restate it.
+	ReplyTo MessageRef
 	// Files travel with the message. Path is set and readable; a transport
 	// that cannot carry files reports NotSupported rather than dropping them
 	// silently, so the sender learns the file did not arrive.
@@ -140,12 +150,47 @@ type Inbound struct {
 	Files []api.Attachment
 }
 
+// Press is one tap on a button courier drew, observed on the human side.
+//
+// It is not an Inbound: nobody wrote anything. The words were composed before
+// the button existed, and what the transport reports is only which option was
+// taken, on which message, by whom.
+type Press struct {
+	Thread ThreadRef
+	// Message is the message the button sits on.
+	Message MessageRef
+	// Choice is the transport handle of the option taken — for Telegram, the
+	// callback_data, which is why the answer itself was never put in it.
+	Choice string
+	// Author is a display name for the log.
+	Author string
+	// AuthorID is the transport's stable id for whoever pressed, checked
+	// against the same allow-list a written message is checked against.
+	AuthorID string
+	At       time.Time
+}
+
+// PressResult is what to show the person who pressed, in whatever momentary
+// acknowledgement the transport has — on Telegram, the toast over the button.
+type PressResult struct {
+	// Toast is one short line. It is the only feedback a press gets before the
+	// message itself is rewritten, so it says what happened, not "ok".
+	Toast string
+	// Alert asks for the more insistent form, for a press that changed nothing.
+	Alert bool
+}
+
 // Sink receives inbound traffic from a running backend.
 type Sink interface {
 	// Receive is called for each inbound message. It must not block for long:
 	// a backend's receive loop is single-threaded, and a slow sink stalls
 	// everything else arriving on that transport.
 	Receive(ctx context.Context, channel string, in Inbound)
+	// Press is called when a person takes one of the options courier offered.
+	// Unlike Receive it answers: the transport has to tell the person what
+	// their tap did, and only the daemon knows. It must be quick for the same
+	// reason Receive must be — it runs on the backend's single receive loop.
+	Press(ctx context.Context, channel string, p Press) (PressResult, error)
 	// SetStatus reports a change in the transport's health, so a channel that
 	// has lost its connection says so instead of silently going quiet.
 	SetStatus(ctx context.Context, channel string, phase api.Phase, message string)

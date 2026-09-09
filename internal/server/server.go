@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ func New(opts Options) *Server {
 	mux.HandleFunc("POST /api/v1/messages", s.createMessage)
 	mux.HandleFunc("GET /api/v1/messages/{name}", s.getMessage)
 	mux.HandleFunc("POST /api/v1/messages/{name}/cancel", s.cancelMessage)
+	mux.HandleFunc("POST /api/v1/messages/{name}/draft", s.draftMessage)
 	mux.HandleFunc("GET /api/v1/messages/{name}/answer", s.awaitAnswer)
 
 	mux.HandleFunc("GET /api/v1/watch", s.watchAll)
@@ -189,8 +191,72 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 		"version":         s.version,
 		"channels":        len(channels.Items),
 		"degraded":        degraded,
+		"waiting":         s.waiting(),
 		"resourceVersion": s.svc.Store().Version(),
 	})
+}
+
+// waitingQuestion is one agent standing still, and for how long.
+type waitingQuestion struct {
+	Conversation string     `json:"conversation"`
+	Message      string     `json:"message"`
+	Summary      string     `json:"summary,omitempty"`
+	Since        *time.Time `json:"since,omitempty"`
+	Seconds      int64      `json:"seconds"`
+	// Draft names the answer already offered for this question, if one is on
+	// the reader's screen — so a question that is waiting on a tap can be told
+	// from one still waiting on somebody to write it an answer.
+	Draft string `json:"draft,omitempty"`
+}
+
+// waiting lists the questions nobody has answered yet, longest first.
+//
+// The duration is computed here and stored nowhere. A resource can only hold
+// the timestamp — a duration written into an object is wrong by the time it is
+// read — but a duration is what the reader of this endpoint actually wants: an
+// orchestrator deciding whether to re-raise a question or withdraw it is asking
+// how long an agent has been standing still, not what time it was when it stopped.
+//
+// Nothing here expires. A question with no answer stays open however long it
+// takes: a timeout that answered on the reader's behalf would turn silence into
+// consent, and asleep, busy and unconvinced all look identical from here. Saying
+// how long it has been is the honest thing to do with that silence.
+func (s *Server) waiting() []waitingQuestion {
+	convs, err := s.svc.ListConversations()
+	if err != nil {
+		return []waitingQuestion{}
+	}
+	now := time.Now().UTC()
+	out := []waitingQuestion{}
+	for _, c := range convs.Items {
+		if c.Status.PendingQuestion == "" {
+			continue
+		}
+		w := waitingQuestion{Conversation: c.Metadata.Name, Message: c.Status.PendingQuestion}
+		since := c.Status.PendingQuestionSince
+		if m, merr := s.svc.GetMessage(c.Status.PendingQuestion); merr == nil {
+			if !m.Open() {
+				continue
+			}
+			w.Summary = m.Spec.Body.Summary()
+			if since == nil {
+				// A question that was already standing when this daemon learned
+				// to record the timestamp. The message knows when it was sent.
+				since = m.Status.SentAt
+			}
+		}
+		if since != nil {
+			at := since.UTC()
+			w.Since = &at
+			w.Seconds = int64(now.Sub(at).Seconds())
+		}
+		if d, ok := s.svc.LiveDraft(c.Status.PendingQuestion); ok {
+			w.Draft = d.Metadata.Name
+		}
+		out = append(out, w)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seconds > out[j].Seconds })
+	return out
 }
 
 // endpoint is one row of the discovery index.
@@ -223,7 +289,8 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 			{"POST", "/api/v1/messages", "Send. spec.awaitReply holds the message open as a question until it is answered or withdrawn."},
 			{"GET", "/api/v1/messages/{name}", "One message, including status.answer once someone has replied."},
 			{"GET", "/api/v1/messages/{name}/answer", "Block until the question is answered or withdrawn; ?timeout=60s. A timeout returns it still open."},
-			{"POST", "/api/v1/messages/{name}/cancel", "Withdraw a question and strike it where the reader can see it."},
+			{"POST", "/api/v1/messages/{name}/cancel", "Withdraw a question, or a drafted answer, and strike it where the reader can see it."},
+			{"POST", "/api/v1/messages/{name}/draft", "Offer the reader a ready answer to this open question, as buttons they confirm with one tap. The orchestrator's call: there is no MCP tool for it, because an agent drafting its own approval is the gate dissolving."},
 			{"GET", "/api/v1/watch", "Stream every kind at once; ?resourceVersion=N to resume, ?kind=Message to filter."},
 			{"POST", "/mcp", "The MCP tool set, over streamable HTTP. Agents connect here."},
 		},

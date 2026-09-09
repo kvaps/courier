@@ -92,6 +92,7 @@ func serve(args []string) error {
 		tgFile   = fs.String("telegram-token-file", "", "KEY=VALUE file holding the bot token; defaults to ~/.claude/channels/telegram/.env")
 		tgEnv    = fs.String("telegram-token-env", "TELEGRAM_BOT_TOKEN", "environment variable holding the bot token, checked before the file")
 		tgPrompt = fs.String("telegram-reply-prompt", api.DefaultReplyPrompt, "the line that closes a question, inviting a one-word answer")
+		tgChoice = fs.String("telegram-choice-prompt", api.DefaultChoicePrompt, "the line that closes a drafted answer, saying the buttons are an offer and writing a reply still works")
 		tgAllow  = fs.String("telegram-allow-from", "", "comma-separated Telegram user ids allowed to drive agents; empty means anyone in the chat")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -120,11 +121,12 @@ func serve(args []string) error {
 	}
 	if *tgChat != "" {
 		if err := ensureTelegram(ctx, svc, *tgName, telegram.Config{
-			Chat:        *tgChat,
-			TokenFile:   *tgFile,
-			TokenEnv:    *tgEnv,
-			ReplyPrompt: *tgPrompt,
-			AllowFrom:   parseIDs(*tgAllow),
+			Chat:         *tgChat,
+			TokenFile:    *tgFile,
+			TokenEnv:     *tgEnv,
+			ReplyPrompt:  *tgPrompt,
+			ChoicePrompt: *tgChoice,
+			AllowFrom:    parseIDs(*tgAllow),
 		}); err != nil {
 			return err
 		}

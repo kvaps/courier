@@ -55,6 +55,69 @@ func (b Body) Render(replyPrompt string, awaitReply bool) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// DefaultChoicePrompt closes a drafted answer by saying, in one line, that the
+// buttons are an offer and not the only way through: the reader can always
+// write their own words instead. Like DefaultReplyPrompt it is a channel
+// setting, because the language a person is addressed in belongs to the channel.
+const DefaultChoicePrompt = "Tap one — or write your own answer."
+
+// RenderDraft lays out an answer somebody drafted for the reader to confirm.
+//
+// It shows the words of every option in full, not just the button labels. That
+// is the whole safeguard: a button says "Send", and a reader who taps it
+// without having seen what gets sent has approved nothing. It also names the
+// drafter above the options, so an answer written for the reader can never be
+// mistaken for a line they wrote themselves.
+func RenderDraft(b Body, draftedBy string, choices []Choice, prompt string) string {
+	parts := draftParts(b, draftedBy, choices)
+	if p := strings.TrimSpace(prompt); p != "" {
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// RenderChosen is the draft as it looks once a choice has been taken: the same
+// offer, with the buttons gone and a line saying who took which option. The
+// options that were not taken stay on screen — the record of what was on offer
+// is half of what makes an approval reviewable afterwards.
+func RenderChosen(b Body, draftedBy string, choices []Choice, taken Choice, by string) string {
+	who := strings.TrimSpace(by)
+	if who == "" {
+		who = "the operator"
+	}
+	parts := append(draftParts(b, draftedBy, choices),
+		"✓ "+who+" chose \""+taken.Label+"\" — sent as the answer")
+	return strings.Join(parts, "\n\n")
+}
+
+// RenderRetired is the draft with its buttons withdrawn and the reason on it,
+// for when the question it answered was settled some other way.
+func RenderRetired(b Body, draftedBy string, choices []Choice, note string) string {
+	n := strings.TrimSpace(note)
+	if n == "" {
+		n = "withdrawn"
+	}
+	parts := append(draftParts(b, draftedBy, choices), "— "+n+" (nothing was sent)")
+	return strings.Join(parts, "\n\n")
+}
+
+func draftParts(b Body, draftedBy string, choices []Choice) []string {
+	var parts []string
+	if head := strings.TrimSpace(b.Context); head != "" {
+		parts = append(parts, head)
+	}
+	if by := strings.TrimSpace(draftedBy); by != "" {
+		parts = append(parts, "Draft by "+by+":")
+	}
+	if t := strings.TrimSpace(b.Text); t != "" {
+		parts = append(parts, t)
+	}
+	for _, c := range choices {
+		parts = append(parts, "▸ "+c.Label+" — "+strings.TrimSpace(c.Answer))
+	}
+	return parts
+}
+
 // Prefix renders a progress marker like "3/12", or "" when there is none.
 // A total of zero or an index past the total is treated as no progress at all:
 // a wrong counter is worse than none, because it tells the reader the run is
