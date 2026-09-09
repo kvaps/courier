@@ -123,6 +123,10 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 // Withdrawing a question takes its drafted answers down with it. Leaving them
 // would leave a live keyboard under a question nobody is waiting on, and the
 // reader tapping it would be answering into nothing.
+//
+// It works even when the conversation is gone. Settling the message is the
+// whole point of the call, and a message whose thread was cleaned up under it
+// is exactly the one with no other way left to close.
 func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message, error) {
 	m, err := s.messages.Get(name)
 	if err != nil {
@@ -132,15 +136,27 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 		return nil, api.NewInvalid("message %q is neither an open question nor a drafted answer still on offer (phase %s)",
 			name, m.Status.Phase)
 	}
-	conv, err := s.conversations.Get(m.Spec.Conversation)
-	if err != nil {
-		return nil, err
-	}
-
 	note := strings.TrimSpace(reason)
 	if note == "" {
 		note = "withdrawn"
 	}
+
+	// A message can outlive its conversation: threads get cleaned up while a
+	// question is still standing. Withdrawing must still work then — the point
+	// of cancel is to settle the message, and refusing because the thread is
+	// gone would leave it open forever with no way to close it. There is simply
+	// nothing left to strike on the transport. That holds for a drafted answer
+	// exactly as it does for a question: its buttons went with the thread.
+	conv, err := s.conversations.Get(m.Spec.Conversation)
+	if err != nil {
+		if !api.IsNotFound(err) {
+			return nil, err
+		}
+		m.Status.Phase = api.PhaseCancelled
+		m.Status.Message = note + " (its conversation no longer exists, so nothing was struck in the thread)"
+		return s.messages.UpdateStatus(m)
+	}
+
 	if m.DraftOpen() {
 		s.retire(ctx, conv, m, note)
 		return s.messages.Get(name)

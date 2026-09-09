@@ -390,6 +390,34 @@ func TestCancellingADraftLeavesTheQuestionOpen(t *testing.T) {
 	}
 }
 
+// A drafted answer can outlive its conversation the same way a question can:
+// deleting a thread withdraws the open question first, but that withdrawal is
+// best-effort, and the delete goes ahead either way. Withdrawing must still
+// settle the draft — there is simply no thread left to take the buttons out of.
+func TestCancellingADraftWhoseConversationIsGone(t *testing.T) {
+	svc, _, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "Mention security at all?")
+	d := draft(t, svc, q.Metadata.Name, sendRefuse())
+
+	// The thread cleaned up under a live draft, as it would be if the
+	// withdrawal that precedes a delete had failed.
+	if err := svc.conversations.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.Cancel(context.Background(), d.Metadata.Name, "no longer relevant")
+	if err != nil {
+		t.Fatalf("a draft with no thread left could not be withdrawn: %v", err)
+	}
+	if got.Status.Phase != api.PhaseCancelled {
+		t.Errorf("phase = %s, want Cancelled", got.Status.Phase)
+	}
+	if !strings.Contains(got.Status.Message, "no longer exists") {
+		t.Errorf("the record does not say why nothing was struck: %q", got.Status.Message)
+	}
+}
+
 // A question with no answer stays open however long it takes. What the API owes
 // the reader is the timestamp to measure that from.
 func TestAQuestionRecordsHowLongItHasBeenWaiting(t *testing.T) {

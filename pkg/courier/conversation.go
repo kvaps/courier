@@ -116,7 +116,19 @@ func (s *Service) CloseConversation(ctx context.Context, name string) (*api.Conv
 
 // DeleteConversation removes a conversation. Its messages are left in the store
 // under their own names, because they are the record of what was decided.
-func (s *Service) DeleteConversation(name string) error {
+//
+// An open question is withdrawn first. Deleting the thread out from under one
+// would leave it standing forever: the person can no longer answer it, since
+// the place they would answer in is gone, and nothing else ever settles it.
+func (s *Service) DeleteConversation(ctx context.Context, name string) error {
+	if c, err := s.conversations.Get(name); err == nil {
+		if q, open := s.openQuestion(c); open {
+			if _, cerr := s.Cancel(ctx, q.Metadata.Name, "the conversation was closed before this was answered"); cerr != nil {
+				s.log.Warn("could not withdraw the open question before deleting its conversation",
+					"conversation", name, "message", q.Metadata.Name, "err", cerr)
+			}
+		}
+	}
 	return s.conversations.Delete(name)
 }
 

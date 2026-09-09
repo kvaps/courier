@@ -3,3 +3,6 @@
 *.test
 *.out
 .DS_Store
+
+# Worktrees other agents create inside the repo.
+.claude/
