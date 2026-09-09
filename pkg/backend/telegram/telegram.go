@@ -51,9 +51,15 @@ type Config struct {
 	// It is a channel setting because the language a person is addressed in
 	// belongs to the channel, not to the daemon.
 	ReplyPrompt string `json:"replyPrompt,omitempty"`
-	// AllowFrom, when set, restricts who may drive agents from this chat.
+	// ChoicePrompt closes a drafted answer, saying the buttons are an offer and
+	// writing a reply by hand still works. A channel setting for the same
+	// reason ReplyPrompt is one.
+	ChoicePrompt string `json:"choicePrompt,omitempty"`
+	// AllowFrom, when set, restricts who may drive agents from this chat. It
+	// covers both ways of driving one: writing a message and pressing a button.
 	// Empty means anyone who can write in the group, which is acceptable only
-	// because the group is private.
+	// because the group is private — and a group of two is only ever a group of
+	// two until somebody is added to it.
 	AllowFrom []int64 `json:"allowFrom,omitempty"`
 	// PollTimeout is the getUpdates long-poll timeout in seconds.
 	PollTimeout int `json:"pollTimeout,omitempty"`
@@ -104,6 +110,9 @@ func newBackend(env backend.Env, raw json.RawMessage) (backend.Backend, error) {
 	if cfg.ReplyPrompt == "" {
 		cfg.ReplyPrompt = api.DefaultReplyPrompt
 	}
+	if cfg.ChoicePrompt == "" {
+		cfg.ChoicePrompt = api.DefaultChoicePrompt
+	}
 	if cfg.PollTimeout <= 0 {
 		cfg.PollTimeout = 30
 	}
@@ -133,6 +142,9 @@ func (b *Backend) Kind() string { return Kind }
 
 // ReplyPrompt is the channel's configured closing line for a question.
 func (b *Backend) ReplyPrompt() string { return b.cfg.ReplyPrompt }
+
+// ChoicePrompt is the channel's configured closing line for a drafted answer.
+func (b *Backend) ChoicePrompt() string { return b.cfg.ChoicePrompt }
 
 // Connect authenticates and resolves the destination chat.
 func (b *Backend) Connect(ctx context.Context) (backend.Identity, error) {
@@ -233,13 +245,29 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		return backend.MessageRef{}, api.NewBackendError("telegram channel %s is not connected", b.channel)
 	}
 
+	markup, merr := keyboard(out.Choices)
+	if merr != nil {
+		return backend.MessageRef{}, merr
+	}
+	replyTo := 0
+	if !out.ReplyTo.Zero() {
+		// A reply to a message that is gone would fail the send outright, so a
+		// ref that is not a message id is dropped rather than raised: the
+		// quotation is a convenience, the message is not.
+		if n, cerr := strconv.Atoi(out.ReplyTo.ID); cerr == nil {
+			replyTo = n
+		}
+	}
+
 	var first backend.MessageRef
 	if strings.TrimSpace(out.Text) != "" {
-		msgID, serr := b.sendText(ctx, chatID, id, out.Text)
+		msgID, serr := b.sendText(ctx, chatID, id, out.Text, replyTo, markup)
 		if serr != nil {
 			return backend.MessageRef{}, serr
 		}
 		first = backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}
+	} else if markup != "" {
+		return backend.MessageRef{}, api.NewInvalid("buttons need a message to sit under: this one has no text")
 	}
 
 	for _, f := range out.Files {
@@ -264,10 +292,10 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 // sendText posts one text message, honouring a flood wait once. Telegram says
 // exactly how long to wait; ignoring it and retrying at once is how a bot earns
 // a longer ban.
-func (b *Backend) sendText(ctx context.Context, chatID int64, threadID int, text string) (int, error) {
+func (b *Backend) sendText(ctx context.Context, chatID int64, threadID int, text string, replyTo int, markup string) (int, error) {
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
-		msgID, err := b.api.sendMessage(ctx, chatID, threadID, text, 0)
+		msgID, err := b.api.sendMessage(ctx, chatID, threadID, text, replyTo, markup)
 		if err == nil {
 			return msgID, nil
 		}
@@ -303,6 +331,37 @@ func (b *Backend) Edit(ctx context.Context, ref backend.MessageRef, text string)
 		return api.NewBackendError("telegram editMessageText: %v", err)
 	}
 	return nil
+}
+
+// callbackDataMax is Telegram's hard cap on what a button may carry: 64 bytes.
+// It is the reason a choice's answer lives in the message resource and only a
+// handle to it travels in the button.
+const callbackDataMax = 64
+
+// keyboard renders courier's choices as an inline keyboard, one button per row.
+//
+// One per row rather than side by side: these are approval buttons read on a
+// phone, and two adjacent targets are two chances to send the wrong answer with
+// a thumb. A tall keyboard costs a little scrolling; a mis-tap costs a decision.
+func keyboard(choices []api.Choice) (string, error) {
+	if len(choices) == 0 {
+		return "", nil
+	}
+	rows := make([][]map[string]string, 0, len(choices))
+	for _, c := range choices {
+		if len(c.Ref) > callbackDataMax {
+			return "", api.NewInvalid("choice %q has a handle longer than Telegram's %d-byte button data", c.ID, callbackDataMax)
+		}
+		if strings.TrimSpace(c.Label) == "" || strings.TrimSpace(c.Ref) == "" {
+			return "", api.NewInvalid("choice %q needs both a label and a handle", c.ID)
+		}
+		rows = append(rows, []map[string]string{{"text": c.Label, "callback_data": c.Ref}})
+	}
+	raw, err := json.Marshal(map[string]any{"inline_keyboard": rows})
+	if err != nil {
+		return "", api.NewInternalError("render the keyboard: %v", err)
+	}
+	return string(raw), nil
 }
 
 // marks maps courier's acknowledgements onto emoji Telegram accepts.

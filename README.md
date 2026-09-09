@@ -67,6 +67,8 @@ The bot must be an **administrator** of the group, with topics enabled. Administ
 | `cancel` | withdrawing a question that stopped mattering |
 | `list_conversations`, `get_conversation`, `close_conversation`, `list_messages`, `get_message`, `list_channels` | reading the record |
 
+Drawing approval buttons is **not** in this table, and that is the point — see [Answering with one tap](#answering-with-one-tap).
+
 `ask` takes `context`, `question` and `proposal` as separate fields rather than one string. That is the whole design: an agent handed a free-form body writes a wall of jargon about a thread you have not seen in a week, and the shape of the input is the cheapest place to prevent it. `context` re-orients you in a line, `question` is a plain either/or, `proposal` is the agent's own recommended answer so you can reply with one word, and `progress` shows the end coming.
 
 **Files travel both ways.** `send` and `ask` take `files` — absolute paths on this machine, uploaded so the reader gets the screenshot or the log itself rather than a path they cannot open from a phone. A message may be nothing but a file. In the other direction, a file the person sends is downloaded before the agent hears about it: the message's `spec.attachments[].path` is an ordinary local file, and the envelope the agent receives names it. Telegram caps a bot at 50 MB up and 20 MB down; courier refuses anything larger up front, naming the file, rather than failing mid-upload.
@@ -74,6 +76,69 @@ The bot must be an **administrator** of the group, with topics enabled. Administ
 A received filename is a hint and never a path. Courier builds the name on disk itself — separators removed, prefixed with the file's id so two people sending `screenshot.png` do not overwrite each other — because these paths are handed to agents.
 
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
+
+## Answering with one tap
+
+Composing the answer is the expensive half. You read the question on a phone, between ten other agents, about a thread you have not seen in a week — and then you have to write something. So the orchestrator writes it for you, and you say yes.
+
+An agent asks the way it always did. The orchestrator, which is watching the queue anyway, drafts the answer and posts it under the question with buttons:
+
+```sh
+curl -sX POST localhost:7717/api/v1/messages/externalip-api-7/draft -d @draft.json
+```
+
+```json
+{
+  "draftedBy": "orchestrator",
+  "choices": [
+    {"id": "send",   "label": "Send",   "answer": "Keep one honest sentence: today a catalogue app lands on the shared cluster, and ComputePlane puts it in an isolated VM."},
+    {"id": "refuse", "label": "Refuse", "answer": "Drop the security framing entirely - describe what it does and let the reader draw the conclusion."}
+  ]
+}
+```
+
+The topic gets a message quoting the question:
+
+```
+Draft by orchestrator:
+
+▸ Send — Keep one honest sentence: today a catalogue app lands on the shared
+  cluster, and ComputePlane puts it in an isolated VM.
+
+▸ Refuse — Drop the security framing entirely — describe what it does and let
+  the reader draw the conclusion.
+
+Tap one — or write your own answer.
+
+           ┌──────────┐
+           │   Send   │
+           ├──────────┤
+           │  Refuse  │
+           └──────────┘
+```
+
+You tap `Send`. The agent's `ask` returns with the whole drafted sentence as its answer, the message is rewritten in place to say what you chose, and the buttons go away.
+
+**Every option's words are on screen, never only its label.** A button says "Send"; a reader who taps it without having seen what gets sent has approved nothing. Those words are also why the button cannot carry them: Telegram allows a button 64 bytes of data, so it carries a handle courier mints and the answer stays in the Message resource — which is what lets the whole offer, and not only the option taken, be read back afterwards.
+
+**The answer says whose words it is.** `status.approval` names the drafter, the option taken and the draft it came from, and the text delivered into the agent's session says it in a sentence: *these are not their own words, the orchestrator drafted them and the operator confirmed the draft by choosing "Send".* That is not politeness. A one-tap approval is cheap, and a cheap approval becomes reflexive; when a decision turns out to have been wrong, the record has to lead back to whoever actually composed it rather than crediting you with authorship you never had.
+
+**Refusing is answering, and it is not `cancel`.** `Refuse` settles the question with real instructions the agent can act on — *don't do that, do this instead*. `cancel` is the asker withdrawing a question that stopped mattering, and it leaves nothing behind. So every option must carry an answer: a button that answered nothing would let a question be closed with no decision behind it, and the queue would look shorter than it was.
+
+**Silence is never consent.** Nothing expires, and no timeout answers on your behalf. A question you have not tapped stays open however long that takes, because asleep, busy and unconvinced all look identical from here. What the daemon does instead is say how long it has been waiting: `status.pendingQuestionSince` on the conversation, and `/api/healthz` computing the durations, longest first, so the orchestrator can re-raise a stale question or withdraw it.
+
+```sh
+curl -s localhost:7717/api/healthz | jq .waiting
+[{"conversation":"externalip-api","message":"externalip-api-7","summary":"Mention security at all?","seconds":8140,"draft":"externalip-api-9"}]
+```
+
+**Writing still works, and takes the draft down.** Buttons are an offer laid over the ordinary way of answering, never a replacement for it. Type a reply and it settles the question exactly as before — recorded as your own words, with no approval on it — and the draft is struck where it stands, so a decided question never keeps a live keyboard under it. The same happens when the asker withdraws the question.
+
+**Only the orchestrator draws buttons.** Drafting is an HTTP route and deliberately has no MCP tool, because the MCP tool set is what an agent is handed. An agent able to draft the approval of its own question would be asking you to rubber-stamp its own reasoning — the gate dissolving rather than the gate working — and the whole value of one-tap approval rests on somebody other than the asker having thought about the answer first. Keep it that way: put it in the tool set and the gate is gone.
+
+**Pressing is driving an agent, so `allowFrom` covers it.** A tap arrives as a `callback_query` with its own sender, not as a message, and it is checked against the same allow-list. Without that, anyone who can see the group could close another person's question with a thumb. The group is two people today, which is exactly the kind of fact that quietly stops being true.
+
+**Buttons are optional.** A question asked without a draft is sent, rendered and answered exactly as it was before any of this existed.
 
 ## The API
 
@@ -84,14 +149,14 @@ GET  /api/v1                          a prose index of every route
 GET  /api/healthz                     health, and which channels are degraded
      /api/v1/channels                 transports
      /api/v1/conversations            threads          + /{name}/close
-     /api/v1/messages                 messages         + /{name}/cancel, /{name}/answer
+     /api/v1/messages                 messages         + /{name}/cancel, /{name}/answer, /{name}/draft
 GET  /api/v1/watch                    every kind, ?resourceVersion=N&kind=Message
 POST /mcp                             the tool set, over streamable HTTP
 ```
 
 Attachments are paths, not uploads: both sides of a conversation share a filesystem, so the API moves file names and the daemon moves the bytes across the transport in between. There is no blob store to run.
 
-Three kinds. A **Channel** is a configured transport. A **Conversation** is one thread — with a person on one side (`spec.channel`) and, optionally, a machine on the other (`spec.agent`). A **Message** is one item in it; a question is a message with `spec.awaitReply`, and your reply lands in its `status.answer`.
+Three kinds. A **Channel** is a configured transport. A **Conversation** is one thread — with a person on one side (`spec.channel`) and, optionally, a machine on the other (`spec.agent`). A **Message** is one item in it; a question is a message with `spec.awaitReply`, and your reply lands in its `status.answer`. A message with `spec.choices` is a drafted answer to one of those questions, and `status.approval` on the answer records that you confirmed somebody else's words rather than writing your own.
 
 Watch is chunked JSON, one event per line — the format that needs no dependency and no protocol upgrade, so `curl -N` follows it:
 

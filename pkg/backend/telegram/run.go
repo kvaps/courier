@@ -74,9 +74,13 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 	return nil
 }
 
-// handle turns one update into an inbound message, dropping everything that is
-// not a person writing in this chat.
+// handle turns one update into an inbound message or a button press, dropping
+// everything that is not a person acting in this chat.
 func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
+	if up.CallbackQuery != nil {
+		b.handlePress(ctx, sink, up.CallbackQuery)
+		return
+	}
 	log := b.logger()
 	msg := up.Message
 	b.mu.RLock()
@@ -113,6 +117,69 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 		At:       time.Unix(msg.Date, 0).UTC(),
 		Files:    files,
 	})
+}
+
+// toastMax is Telegram's cap on the text shown over a pressed button.
+const toastMax = 200
+
+// handlePress turns a tap into a press the daemon can act on, and tells the
+// person what their tap did.
+//
+// The allow-list is checked here and not only on written messages. A press is
+// the other way to drive an agent, and it arrives as its own update type with
+// its own sender: an allow-list that covers only messages would let anybody who
+// can see the group close another person's question with one tap. The group is
+// two people today, which is exactly the kind of fact that stops being true
+// without anybody revisiting the code that assumed it.
+func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCallbackQuery) {
+	log := b.logger()
+	if cq.From == nil || cq.From.IsBot || cq.Message == nil {
+		return
+	}
+	b.mu.RLock()
+	chatID := b.chatID
+	b.mu.RUnlock()
+	if cq.Message.Chat.ID != chatID {
+		// Not ours to act on, but the clock is spinning on somebody's button.
+		b.answerPress(ctx, cq.ID, "", false)
+		return
+	}
+	if len(b.allow) > 0 && !b.allow[cq.From.ID] {
+		log.Warn("refusing a button press from a sender not in allowFrom", "from", cq.From.ID)
+		b.answerPress(ctx, cq.ID, "This is not yours to answer.", true)
+		return
+	}
+
+	ref := backend.ThreadRef("")
+	if cq.Message.ThreadID > 0 {
+		ref = backend.ThreadRef(strconv.Itoa(cq.Message.ThreadID))
+	}
+	res, err := sink.Press(ctx, b.channel, backend.Press{
+		Thread:   ref,
+		Message:  backend.MessageRef{Thread: ref, ID: strconv.Itoa(cq.Message.MessageID)},
+		Choice:   cq.Data,
+		Author:   cq.From.label(),
+		AuthorID: strconv.FormatInt(cq.From.ID, 10),
+		At:       time.Now().UTC(),
+	})
+	toast, alert := res.Toast, res.Alert
+	if err != nil {
+		log.Warn("a button press was refused", "from", cq.From.ID, "err", err)
+		toast, alert = err.Error(), true
+	}
+	b.answerPress(ctx, cq.ID, toast, alert)
+}
+
+// answerPress closes the spinner Telegram puts on a pressed button. It is
+// best-effort: the decision is already recorded, and failing to draw the
+// acknowledgement must not look like a failure to take the answer.
+func (b *Backend) answerPress(ctx context.Context, id, text string, alert bool) {
+	if r := []rune(text); len(r) > toastMax {
+		text = string(r[:toastMax-1]) + "…"
+	}
+	if err := b.api.answerCallbackQuery(ctx, id, text, alert); err != nil {
+		b.logger().Warn("could not acknowledge a button press", "err", err)
+	}
 }
 
 // download fetches whatever the person attached, into the daemon's inbox.

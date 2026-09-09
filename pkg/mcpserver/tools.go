@@ -122,8 +122,12 @@ type askResult struct {
 	Message  *api.Message `json:"message"`
 	Answered bool         `json:"answered"`
 	Answer   string       `json:"answer,omitempty"`
-	// Note explains a result that is not an answer, so the agent does not have
-	// to guess what to do next.
+	// Approval is set when the answer was drafted by somebody else and the
+	// operator confirmed it with one tap rather than writing it. The answer is
+	// no less real for that — but who composed it is part of what you were told.
+	Approval *api.Approval `json:"approval,omitempty"`
+	// Note explains a result that is not a plain answer — one still open, one
+	// withdrawn, or one the operator approved rather than wrote.
 	Note string `json:"note,omitempty"`
 }
 
@@ -160,6 +164,12 @@ func (h *server) await(ctx context.Context, name string, waitSeconds int) (*mcp.
 	switch m.Status.Phase {
 	case api.PhaseAnswered:
 		res.Answered, res.Answer = true, m.Status.Answer
+		if a := m.Status.Approval; a != nil {
+			res.Approval = a
+			res.Note = "these are not the operator's own words: " + a.DraftedBy + " drafted this answer and the operator " +
+				"confirmed it by choosing \"" + a.Label + "\" — one tap, not a reply they composed. It is a real answer and " +
+				"you should act on it; weigh it as an approval rather than as reasoning of their own."
+		}
 	case api.PhaseCancelled:
 		res.Note = "this question was withdrawn (" + m.Status.Message + "); it will not be answered"
 	default:

@@ -46,7 +46,9 @@ func New(cfg Config) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_conversations",
 		Description: "List threads, with what each is bound to and whether one is currently waiting on an answer. " +
-			"Use it to find the conversation name for a given agent before sending.",
+			"Use it to find the conversation name for a given agent before sending. " +
+			"status.pendingQuestion names the question a thread is waiting on and status.pendingQuestionSince says since when, " +
+			"so a question that has been standing too long can be re-raised or withdrawn.",
 	}, h.listConversations)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -82,7 +84,10 @@ func New(cfg Config) *mcp.Server {
 			"Attach files with `files` (absolute paths): a screenshot or a diff is often what turns a question the operator has to " +
 			"go and investigate into one they can answer at a glance.\n\n" +
 			"Returns when the operator answers, or when wait_seconds runs out — a timeout is not a failure, it comes back still open " +
-			"and you can wait again with wait_for_answer.",
+			"and you can wait again with wait_for_answer. There is no timeout that answers for them: an unanswered question stays open.\n\n" +
+			"An answer may come back with `approval` set. That means somebody else drafted the words and the operator confirmed them " +
+			"with one tap rather than composing a reply. Act on it — it is a real answer — but do not read it as reasoning they worked " +
+			"through themselves, and say whose draft it was if you later report how the decision was made.",
 	}, h.ask)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -103,7 +108,9 @@ func New(cfg Config) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "cancel",
 		Description: "Withdraw a question that no longer needs an answer, striking it where the operator can see it so they do not " +
-			"answer something that stopped mattering. Use it before asking a replacement question in the same conversation.",
+			"answer something that stopped mattering. Use it before asking a replacement question in the same conversation.\n\n" +
+			"Withdrawing is not refusing: it says the question stopped mattering and no answer is wanted. An answer of \"no, do not do " +
+			"that\" is an answer, and it comes back through ask like any other.",
 	}, h.cancel)
 
 	mcp.AddTool(s, &mcp.Tool{

@@ -173,6 +173,12 @@ type ConversationStatus struct {
 	// a second question can be refused rather than quietly stealing the first
 	// one's answer.
 	PendingQuestion string `json:"pendingQuestion,omitempty"`
+	// PendingQuestionSince is when that question was sent, so a reader can see
+	// how long an agent has been standing still. It is a timestamp and not a
+	// duration on purpose: a stored duration is a lie the moment it is written,
+	// and the one place a duration is honest is where it is computed on read —
+	// /api/healthz.
+	PendingQuestionSince *time.Time `json:"pendingQuestionSince,omitempty"`
 	// Agent describes the resolved machine side, as observed.
 	Agent *AgentStatus `json:"agent,omitempty"`
 }
@@ -217,9 +223,21 @@ type MessageSpec struct {
 	// human's next message in the thread onto it as the answer, and lets the
 	// asker wait for or withdraw it.
 	AwaitReply bool `json:"awaitReply,omitempty"`
-	// InReplyTo names the outbound Message an inbound one answers. It is set by
-	// the daemon on inbound messages and is empty on outbound ones.
+	// InReplyTo names the Message this one is about: on an inbound message, the
+	// question it answers, set by the daemon; on an outbound drafted answer,
+	// the question whose answer is being offered, set by whoever drafted it.
 	InReplyTo string `json:"inReplyTo,omitempty"`
+	// Choices turn an outbound message into a drafted answer the reader can
+	// confirm with one tap instead of composing a reply. They are only ever
+	// set on a message that names an open question in InReplyTo — the point of
+	// a draft is that somebody already wrote the answer and the reader only
+	// has to agree with it.
+	Choices []Choice `json:"choices,omitempty"`
+	// DraftedBy names whoever wrote those answers, in the words the reader
+	// sees above the buttons. It is required alongside Choices and it is not
+	// decoration: an approval that takes one tap is cheap, and the record has
+	// to say who actually chose the words when one later turns out to be wrong.
+	DraftedBy string `json:"draftedBy,omitempty"`
 	// Attachments are files travelling with the message.
 	//
 	// Outbound, a client supplies Path and the daemon fills in the rest.
@@ -246,6 +264,48 @@ type Attachment struct {
 	// Ref is the transport's own identifier for the file, recorded on an
 	// inbound attachment so the same file can be recognised if it arrives again.
 	Ref string `json:"ref,omitempty"`
+}
+
+// Choice is one button under a drafted answer: what the reader taps, and the
+// exact words the agent is told when they do.
+//
+// The answer travels in the resource and never in the button. Telegram caps the
+// data a button carries at 64 bytes, a fraction of any real answer, so the
+// button carries Ref — a short handle the daemon mints — and the words stay
+// here, where what was on offer can still be read back afterwards.
+type Choice struct {
+	// ID is the drafter's own name for this option, e.g. "send" or "refuse".
+	// It is what an agent branches on without parsing prose.
+	ID string `json:"id"`
+	// Label is the button's text: two or three words, read on a phone.
+	Label string `json:"label"`
+	// Answer is what the agent is told when this button is tapped. It is
+	// always a real answer, never an acknowledgement — a button that answered
+	// nothing would close a question without deciding it, and withdrawing a
+	// question that stopped mattering is what cancel is for.
+	Answer string `json:"answer"`
+	// Ref is the transport's handle for this button, minted by the daemon and
+	// stored so a tap can still be resolved after a restart.
+	Ref string `json:"ref,omitempty"`
+}
+
+// Approval records that an answer was confirmed rather than composed: somebody
+// else wrote the words and the reader agreed to them with one tap.
+//
+// It is a separate field rather than a turn of phrase in the answer because the
+// answer itself has to stay exactly what was offered. What this adds is the
+// authorship — who wrote it, which option was taken, and where the rest of the
+// offer can be read.
+type Approval struct {
+	// DraftedBy names whoever wrote the answer.
+	DraftedBy string `json:"draftedBy"`
+	// Choice is the id of the option that was taken.
+	Choice string `json:"choice"`
+	// Label is what that button said.
+	Label string `json:"label,omitempty"`
+	// Draft names the Message that carried the buttons, so the whole offer —
+	// every option, not only the one taken — can be read back.
+	Draft string `json:"draft,omitempty"`
 }
 
 // Body is a message composed the way a colleague would text it: one decision,
@@ -292,6 +352,9 @@ type MessageStatus struct {
 	// AnsweredBy is who replied, for the log — a display name, not an identity
 	// the daemon authorises against.
 	AnsweredBy string `json:"answeredBy,omitempty"`
+	// Approval is set when the answer was a draft the reader confirmed rather
+	// than words they wrote. Absent means they typed it themselves.
+	Approval *Approval `json:"approval,omitempty"`
 	// Message explains a Failed or Cancelled phase.
 	Message string `json:"message,omitempty"`
 }
@@ -312,6 +375,33 @@ func (m *Message) Open() bool {
 	default:
 		return false
 	}
+}
+
+// DraftOpen reports whether this is a drafted answer whose buttons are still
+// live — drawn, not yet taken, not withdrawn.
+func (m *Message) DraftOpen() bool {
+	if m.Spec.Direction != Outbound || len(m.Spec.Choices) == 0 {
+		return false
+	}
+	switch m.Status.Phase {
+	case PhasePending, PhaseSent:
+		return true
+	default:
+		return false
+	}
+}
+
+// ChoiceByRef finds the option a transport handle stands for.
+func (m *Message) ChoiceByRef(ref string) (Choice, bool) {
+	if ref == "" {
+		return Choice{}, false
+	}
+	for _, c := range m.Spec.Choices {
+		if c.Ref == ref {
+			return c, true
+		}
+	}
+	return Choice{}, false
 }
 
 // List is the envelope of any list response.

@@ -33,6 +33,9 @@ type Service struct {
 	mu      sync.Mutex
 	running map[string]*channelRuntime
 	sinks   map[string]agent.Sink
+	// closing is set once Close has begun, so no new background work is
+	// started that Close would not wait for.
+	closing bool
 
 	// baseCtx is the daemon's lifetime, used for work that outlives the request
 	// that started it — a channel's receive loop, and a push to an agent that
@@ -88,16 +91,42 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close stops every channel's receive loop and waits for them.
+// Close stops every channel's receive loop, and every delivery still in flight,
+// and waits for them.
+//
+// A delivery to an agent runs on its own goroutine and outlives the call that
+// started it — that is deliberate, because the person has already been told
+// their message was received. It must not outlive the daemon, though: a push
+// still writing to the store while the process tears down is a half-written
+// record, so Close waits for those too rather than only for the receive loops.
 func (s *Service) Close() {
 	s.stop()
 	s.mu.Lock()
+	s.closing = true
 	for name, rt := range s.running {
 		rt.cancel()
 		delete(s.running, name)
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
+}
+
+// background starts work on the daemon's own lifetime rather than the caller's,
+// and makes Close wait for it. It reports false once the daemon is shutting
+// down, when the work would be abandoned halfway anyway.
+func (s *Service) background(f func()) bool {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return false
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.wg.Done()
+		f()
+	}()
+	return true
 }
 
 // activate connects a channel's backend and starts its receive loop.
@@ -241,6 +270,21 @@ func (s *Service) DeleteChannel(name string) error {
 	}
 	s.mu.Unlock()
 	return s.channels.Delete(name)
+}
+
+// choicePrompt returns the channel's configured closing line for a drafted
+// answer — the line that says the buttons are an offer and typing still works.
+func (s *Service) choicePrompt(channel string) string {
+	be, err := s.backendFor(channel)
+	if err != nil {
+		return api.DefaultChoicePrompt
+	}
+	if p, ok := be.(interface{ ChoicePrompt() string }); ok {
+		if v := p.ChoicePrompt(); v != "" {
+			return v
+		}
+	}
+	return api.DefaultChoicePrompt
 }
 
 // replyPrompt returns the channel's configured closing line for a question.

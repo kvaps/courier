@@ -123,3 +123,57 @@ func TestMessageOpen(t *testing.T) {
 		t.Error("an inbound message is never an open question")
 	}
 }
+
+// A reader who taps "Send" without having seen what gets sent has approved
+// nothing, so the words of every option are on screen, not only the labels —
+// and the drafter is named, so an answer written for the reader is never
+// mistaken for a line they wrote themselves.
+func TestRenderDraftShowsEveryOptionInFull(t *testing.T) {
+	got := RenderDraft(
+		Body{Text: "He wants the security line dropped."},
+		"the orchestrator",
+		[]Choice{
+			{ID: "send", Label: "Send", Answer: "Keep one honest sentence about isolation."},
+			{ID: "refuse", Label: "Refuse", Answer: "Drop it; say only what it does."},
+		},
+		DefaultChoicePrompt,
+	)
+	for _, want := range []string{
+		"Draft by the orchestrator:",
+		"He wants the security line dropped.",
+		"▸ Send — Keep one honest sentence about isolation.",
+		"▸ Refuse — Drop it; say only what it does.",
+		DefaultChoicePrompt,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// Once a choice is taken the options stay on screen. Half of what makes an
+// approval reviewable afterwards is what else was on offer at the time.
+func TestRenderChosenKeepsTheOfferAndNamesWhoTookIt(t *testing.T) {
+	choices := []Choice{
+		{ID: "send", Label: "Send", Answer: "Keep one honest sentence."},
+		{ID: "refuse", Label: "Refuse", Answer: "Drop it."},
+	}
+	got := RenderChosen(Body{}, "the orchestrator", choices, choices[1], "@kvaps")
+	for _, want := range []string{"▸ Send — Keep one honest sentence.", "▸ Refuse — Drop it.", `✓ @kvaps chose "Refuse" — sent as the answer`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, DefaultChoicePrompt) {
+		t.Errorf("a decided draft still invites an answer:\n%s", got)
+	}
+}
+
+func TestRenderRetiredSaysNothingWasSent(t *testing.T) {
+	got := RenderRetired(Body{}, "the orchestrator",
+		[]Choice{{ID: "send", Label: "Send", Answer: "Keep it."}},
+		"answered in the reader's own words")
+	if !strings.Contains(got, "answered in the reader's own words") || !strings.Contains(got, "nothing was sent") {
+		t.Errorf("a retired draft does not say what became of it:\n%s", got)
+	}
+}
