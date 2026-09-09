@@ -73,6 +73,8 @@ Drawing approval buttons is **not** in this table, and that is the point — see
 
 **Files travel both ways.** `send` and `ask` take `files` — absolute paths on this machine, uploaded so the reader gets the screenshot or the log itself rather than a path they cannot open from a phone. A message may be nothing but a file. In the other direction, a file the person sends is downloaded before the agent hears about it: the message's `spec.attachments[].path` is an ordinary local file, and the envelope the agent receives names it. Telegram caps a bot at 50 MB up and 20 MB down; courier refuses anything larger up front, naming the file, rather than failing mid-upload.
 
+A voice message is the exception, and it is not downloaded at all — see [Answering out loud](#answering-out-loud). Its bytes are not the content; what was said is, and an agent has no ears.
+
 A received filename is a hint and never a path. Courier builds the name on disk itself — separators removed, prefixed with the file's id so two people sending `screenshot.png` do not overwrite each other — because these paths are handed to agents.
 
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
@@ -119,6 +121,8 @@ Tap one — or write your own answer.
 
 You tap `Send`. The agent's `ask` returns with the whole drafted sentence as its answer, the message is rewritten in place to say what you chose, and the buttons go away.
 
+**Editing a message raises no notification**, which is worth knowing because it shaped two things. A pop-up over the button confirms the tap immediately — the insistent kind you dismiss, not the banner that fades, because a press that seems to do nothing gets pressed again. And the outcome is written at the *top* of the rewritten message, not appended after the options, so it is still the first thing you read when you come back to the thread an hour later. Both were learned the first time somebody used this and said "I don't see any reaction".
+
 **Every option's words are on screen, never only its label.** A button says "Send"; a reader who taps it without having seen what gets sent has approved nothing. Those words are also why the button cannot carry them: Telegram allows a button 64 bytes of data, so it carries a handle courier mints and the answer stays in the Message resource — which is what lets the whole offer, and not only the option taken, be read back afterwards.
 
 **The answer says whose words it is.** `status.approval` names the drafter, the option taken and the draft it came from, and the text delivered into the agent's session says it in a sentence: *these are not their own words, the orchestrator drafted them and the operator confirmed the draft by choosing "Send".* That is not politeness. A one-tap approval is cheap, and a cheap approval becomes reflexive; when a decision turns out to have been wrong, the record has to lead back to whoever actually composed it rather than crediting you with authorship you never had.
@@ -134,11 +138,49 @@ curl -s localhost:7717/api/healthz | jq .waiting
 
 **Writing still works, and takes the draft down.** Buttons are an offer laid over the ordinary way of answering, never a replacement for it. Type a reply and it settles the question exactly as before — recorded as your own words, with no approval on it — and the draft is struck where it stands, so a decided question never keeps a live keyboard under it. The same happens when the asker withdraws the question.
 
-**Only the orchestrator draws buttons.** Drafting is an HTTP route and deliberately has no MCP tool, because the MCP tool set is what an agent is handed. An agent able to draft the approval of its own question would be asking you to rubber-stamp its own reasoning — the gate dissolving rather than the gate working — and the whole value of one-tap approval rests on somebody other than the asker having thought about the answer first. Keep it that way: put it in the tool set and the gate is gone.
+**Only the orchestrator draws buttons.** Drafting is an HTTP route and deliberately has no MCP tool, because the MCP tool set is what an agent is handed. Keep it that way: put it in the tool set and the gate is gone.
+
+What that buys is narrower than it first looks, and worth stating exactly. It is not a rule that the drafter must be someone other than the asker — an asker proposing its own answer is the design already, and `ask` has carried `proposal` from the start. A button does not change who proposes; it changes how cheap accepting is. The line is *which* askers: the workers, of which there are twenty and none of them supervised, are the ones whose work an answer authorises, and an agent supplying both the question and the approval of its own reasoning leaves your judgement with nothing to do. The orchestrator is one party, watched, and already the instrument you drive the fleet with — so it may put a question it asked itself on a button, and does. The record says `draftedBy` either way, which is what makes a reflexive approval traceable afterwards.
 
 **Pressing is driving an agent, so `allowFrom` covers it.** A tap arrives as a `callback_query` with its own sender, not as a message, and it is checked against the same allow-list. Without that, anyone who can see the group could close another person's question with a thumb. The group is two people today, which is exactly the kind of fact that quietly stops being true.
 
 **Buttons are optional.** A question asked without a draft is sent, rendered and answered exactly as it was before any of this existed.
+
+## Answering out loud
+
+Talking is faster than typing, especially on a phone, so courier turns a voice message into words. The audio is never downloaded: an agent cannot open an `.oga`, and a copy on disk would be a file nothing ever reads.
+
+The bot cannot do this itself. Telegram transcribes for a *user account*, and courier is a bot — so it asks something that already has that account's session, over MCP:
+
+```sh
+courier serve --telegram-chat … --telegram-transcribe http://127.0.0.1:8787/mcp
+```
+
+That endpoint is [mcp-tg](https://github.com/lexfrei/mcp-tg), whose `tg_messages_transcribe_audio` takes a chat and a message id. Point courier at a client that is already running rather than starting one: two clients on one Telegram account is how you earn `AUTH_KEY_DUPLICATED`. The account needs Telegram Premium for transcription, and it has to be in the group — otherwise the message id resolves to nothing.
+
+**A transcript never settles a question by itself.** Recognition of technical speech is wrong in exactly the places that matter — identifiers, version numbers, and the difference between "send it" and "don't send it", which is one short word. So when the thread is waiting on an answer, what you said comes back as a draft with one button:
+
+```
+Draft by speech recognition:
+
+▸ Send as my answer — keep one honest sentence about isolation
+
+Tap one — or write your own answer.
+
+           ┌────────────────────┐
+           │ Send as my answer  │
+           └────────────────────┘
+```
+
+Tap it and it becomes the answer, recorded as an approval: `draftedBy: speech recognition`, confirmed by you. Say it wrong and you fix it the way you fix any draft — type the correction, which answers the question and takes the offer down. There is no second button for that, because typing already does it.
+
+**Which agent hears it is decided by the topic, never by the words.** A misheard sentence can be wrong about anything except where it goes.
+
+When nothing is waiting on an answer there is nothing to confirm, and the words travel as they are — marked as heard rather than typed, with the envelope telling the agent to read an odd word as an odd word rather than as an instruction.
+
+**A voice message that cannot be transcribed is not delivered, and you are told so in the thread.** Premium missing, Telegram still working on it, or nothing configured at all — each says which, where you spoke. Silence would be the worst of the available outcomes: you would believe you had answered.
+
+Transcription happens on the receive loop, so its wait is time no other message is being read. Twenty seconds by default, and `--telegram-transcribe-wait` moves it; a note that has not come back by then is better reported than waited on.
 
 ## The API
 
@@ -195,6 +237,13 @@ It is read from the environment or a `KEY=VALUE` file, and from nowhere else. It
 This is not theoretical — it happened. The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env`, and it starts **on every session start**, not once. So each new Claude Code session took the token back, courier's poll began returning `409 Conflict`, and every message written in the group from then on went to the plugin instead. Sending kept working, which is what makes it disorienting: the daemon looks alive, the topics fill up, and replies simply never arrive.
 
 The cure was to disable the plugin (`telegram@claude-plugins-official`). The alternative, if you want both, is to give courier its own bot: create one in @BotFather, add it to the group as an administrator with `can_manage_topics`, and start courier with `TELEGRAM_BOT_TOKEN` set in its own environment. Sending is unaffected either way — several bots may post into the same group.
+
+**Restarting produces one of these, and it is not the same thing.** The process being replaced still holds a long poll open, and Telegram takes a second or two to notice the connection is gone, so a new daemon started immediately gets a conflict or two and then settles. Those are logged and nothing else; only from the third in a row does the channel go `Failed`, about six seconds in. The distinction is the point — calling a handover a failed channel is how an operator learns to scroll past the message that matters. To avoid them entirely, let the old process exit before starting the new one:
+
+```sh
+kill "$(pgrep -f 'courier serve')" && while pgrep -f 'courier serve' >/dev/null; do sleep 0.5; done
+courier serve --telegram-chat …
+```
 
 **`/api/healthz` is what finds this.** A channel that loses its poll goes to `Failed`, health flips to `degraded`, and the channel's `status.message` names the conflict. Check it before assuming the group is quiet:
 

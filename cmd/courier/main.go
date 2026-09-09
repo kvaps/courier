@@ -94,6 +94,8 @@ func serve(args []string) error {
 		tgPrompt = fs.String("telegram-reply-prompt", api.DefaultReplyPrompt, "the line that closes a question, inviting a one-word answer")
 		tgChoice = fs.String("telegram-choice-prompt", api.DefaultChoicePrompt, "the line that closes a drafted answer, saying the buttons are an offer and writing a reply still works")
 		tgAllow  = fs.String("telegram-allow-from", "", "comma-separated Telegram user ids allowed to drive agents; empty means anyone in the chat")
+		tgHear   = fs.String("telegram-transcribe", "", "MCP server that turns voice messages into words, e.g. http://127.0.0.1:8787/mcp; without it a voice message is not carried")
+		tgHearS  = fs.Int("telegram-transcribe-wait", 0, "seconds to wait for a transcription; it is the receive loop's own time, so keep it short (default 20)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -127,6 +129,7 @@ func serve(args []string) error {
 			ReplyPrompt:  *tgPrompt,
 			ChoicePrompt: *tgChoice,
 			AllowFrom:    parseIDs(*tgAllow),
+			Transcribe:   transcribeConfig(*tgHear, *tgHearS),
 		}); err != nil {
 			return err
 		}
@@ -200,6 +203,15 @@ func ensureTelegram(ctx context.Context, svc *courier.Service, name string, cfg 
 		slog.Error("telegram channel did not connect", "channel", name, "reason", ch.Status.Message)
 	}
 	return nil
+}
+
+// transcribeConfig turns the flags into a channel's transcription setting, or
+// nothing at all when no endpoint was given.
+func transcribeConfig(endpoint string, wait int) *telegram.TranscribeConfig {
+	if strings.TrimSpace(endpoint) == "" {
+		return nil
+	}
+	return &telegram.TranscribeConfig{Endpoint: strings.TrimSpace(endpoint), WaitSeconds: wait}
 }
 
 func parseIDs(s string) []int64 {

@@ -143,7 +143,12 @@ type Inbound struct {
 	// allow-list is checked against.
 	AuthorID string
 	Text     string
-	At       time.Time
+	// Spoken says Text was transcribed from speech rather than typed. A
+	// transport that can turn a voice message into words sets it, so the daemon
+	// can pass on how the words were captured instead of presenting a
+	// recognition result as something the person wrote out.
+	Spoken bool
+	At     time.Time
 	// Files are what the person attached, already downloaded into InboxDir.
 	// The backend does the downloading because it holds the credential; the
 	// daemon only records where the bytes landed.

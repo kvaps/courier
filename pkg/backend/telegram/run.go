@@ -19,6 +19,14 @@ import (
 const (
 	backoffMin = 2 * time.Second
 	backoffMax = 60 * time.Second
+	// conflictGrace is how many conflicts in a row are taken as a handover
+	// rather than a rival. Restarting the daemon produces one or two: the
+	// process being replaced still holds a long poll open, and Telegram takes a
+	// moment to notice the connection is gone. Reporting that as a failed
+	// channel trains the operator to ignore the message that matters — the
+	// other poller that never goes away. Past this count the channel goes
+	// Failed exactly as before, about six seconds in.
+	conflictGrace = 3
 )
 
 // Run consumes inbound Telegram traffic until ctx is cancelled.
@@ -44,10 +52,13 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 			}
 			if isConflict(err) {
 				conflicts++
-				msg := "another process is polling this bot token — Telegram allows exactly one. " +
-					"Give courier its own bot, or stop the other poller"
-				log.Error("getUpdates conflict", "count", conflicts, "retry_in", backoff)
-				sink.SetStatus(ctx, b.channel, api.PhaseFailed, msg)
+				if msg, failed := conflictReport(conflicts); failed {
+					log.Error("getUpdates conflict", "count", conflicts, "retry_in", backoff)
+					sink.SetStatus(ctx, b.channel, api.PhaseFailed, msg)
+				} else {
+					log.Info("getUpdates conflict; waiting for the previous poller to let go",
+						"count", conflicts, "retry_in", backoff)
+				}
 			} else {
 				log.Warn("getUpdates failed", "err", err, "retry_in", backoff)
 				sink.SetStatus(ctx, b.channel, api.PhaseFailed, err.Error())
@@ -72,6 +83,25 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 		}
 	}
 	return nil
+}
+
+// conflictReport decides how a run of getUpdates conflicts should be reported.
+//
+// The two cases look identical on the wire and could not be less alike in
+// meaning. A restart produces a conflict or two while the process being
+// replaced lets go of its long poll, and it clears itself. A second poller that
+// is there to stay — the Claude Code Telegram plugin, most often — produces one
+// every time, and it is the failure that looks like an outage and is not: the
+// daemon keeps sending, the topics fill up, and replies simply never arrive.
+//
+// So the first few are quiet and the rest are loud. Calling a handover a failed
+// channel is how an operator learns to scroll past the message that matters.
+func conflictReport(count int) (message string, failed bool) {
+	if count < conflictGrace {
+		return "", false
+	}
+	return "another process is polling this bot token — Telegram allows exactly one. " +
+		"Give courier its own bot, or stop the other poller", true
 }
 
 // handle turns one update into an inbound message or a button press, dropping
@@ -104,6 +134,18 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 
 	files := b.download(ctx, msg, string(ref))
 	text := msg.body()
+	spoken := false
+	// A voice message carries words, and the words are the whole of it. An agent
+	// has no ears, so the audio is turned into text here or the message does not
+	// travel at all — handing over the path to an .oga nobody can open would be
+	// a delivery in name only.
+	if msg.Voice != nil && text == "" {
+		heard, ok := b.listen(ctx, msg, ref)
+		if !ok {
+			return // the person has been told; there are no words to carry
+		}
+		text, spoken = heard, true
+	}
 	if text == "" && len(files) == 0 {
 		return // a sticker, or something with no content to carry
 	}
@@ -114,9 +156,66 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 		Author:   msg.From.label(),
 		AuthorID: strconv.FormatInt(msg.From.ID, 10),
 		Text:     text,
+		Spoken:   spoken,
 		At:       time.Unix(msg.Date, 0).UTC(),
 		Files:    files,
 	})
+}
+
+// listen turns a voice message into words, or tells the person why it could not.
+//
+// The message is named to the transcriber the way the transport names it — this
+// chat, this message id — and never by anything read out of the audio. Which
+// agent an answer belongs to is decided by the topic it was spoken in, and a
+// recognised word must not be able to change that.
+//
+// Every failure ends in the thread rather than in the log alone. The person who
+// spoke is the only one who can do anything about any of it, and a voice message
+// that vanishes silently is the worst of the available outcomes: they believe
+// they have answered.
+func (b *Backend) listen(ctx context.Context, msg *tgMessage, thread backend.ThreadRef) (string, bool) {
+	log := b.logger()
+	if b.hear == nil {
+		log.Warn("a voice message arrived but this channel has no transcription configured", "message", msg.MessageID)
+		b.sayInThread(ctx, thread, "🎤 I cannot turn voice into words on this channel — please write it out.")
+		return "", false
+	}
+
+	b.mu.RLock()
+	chatID := b.chatID
+	b.mu.RUnlock()
+
+	started := time.Now()
+	res, err := b.hear.heard(ctx, chatID, msg.MessageID)
+	if err != nil {
+		log.Error("could not transcribe a voice message", "message", msg.MessageID, "err", err)
+		b.sayInThread(ctx, thread, "🎤 could not transcribe that — please write it out.")
+		return "", false
+	}
+	if res.Status != transcribedOK || strings.TrimSpace(res.Text) == "" {
+		log.Warn("a voice message came back without words", "message", msg.MessageID, "status", res.Status)
+		b.sayInThread(ctx, thread, "🎤 "+res.why()+".")
+		return "", false
+	}
+	log.Info("transcribed a voice message", "message", msg.MessageID, "status", res.Status,
+		"took", time.Since(started).Round(time.Millisecond))
+	return strings.TrimSpace(res.Text), true
+}
+
+// sayInThread posts a short line where the person is looking. Best-effort: it
+// is how they are told something went wrong, and failing to tell them is worth
+// a log line and nothing more.
+func (b *Backend) sayInThread(ctx context.Context, thread backend.ThreadRef, text string) {
+	id, err := threadID(thread)
+	if err != nil {
+		return
+	}
+	b.mu.RLock()
+	chatID := b.chatID
+	b.mu.RUnlock()
+	if _, serr := b.api.sendMessage(ctx, chatID, id, text, 0, ""); serr != nil {
+		b.logger().Warn("could not tell the reader about a voice message", "err", serr)
+	}
 }
 
 // toastMax is Telegram's cap on the text shown over a pressed button.
@@ -154,6 +253,12 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 	if cq.Message.ThreadID > 0 {
 		ref = backend.ThreadRef(strconv.Itoa(cq.Message.ThreadID))
 	}
+	// Logged on arrival, before the daemon decides anything. A press is the one
+	// inbound event that leaves no trace in the chat when it goes wrong — the
+	// message it was on looks the same either way — so the log is the only place
+	// anyone can find out that it happened at all.
+	log.Info("button press", "from", cq.From.label(), "thread", ref, "message", cq.Message.MessageID)
+
 	res, err := sink.Press(ctx, b.channel, backend.Press{
 		Thread:   ref,
 		Message:  backend.MessageRef{Thread: ref, ID: strconv.Itoa(cq.Message.MessageID)},
@@ -167,6 +272,7 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 		log.Warn("a button press was refused", "from", cq.From.ID, "err", err)
 		toast, alert = err.Error(), true
 	}
+	log.Debug("acknowledging a button press", "from", cq.From.label(), "toast", toast, "alert", alert)
 	b.answerPress(ctx, cq.ID, toast, alert)
 }
 
@@ -224,7 +330,11 @@ func attached(msg *tgMessage) []tgFile {
 	if msg.Document != nil {
 		out = append(out, *msg.Document)
 	}
-	for _, f := range []*tgFile{msg.Video, msg.Audio, msg.Voice} {
+	// Voice is deliberately absent. It is the one attachment whose bytes are not
+	// the content — the content is what was said — so it is transcribed rather
+	// than downloaded, and a copy of the audio on disk would be a file nothing
+	// ever opens. An audio file sent as a file is a different thing and stays.
+	for _, f := range []*tgFile{msg.Video, msg.Audio} {
 		if f != nil {
 			out = append(out, *f)
 		}

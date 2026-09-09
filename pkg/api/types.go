@@ -332,6 +332,12 @@ type Body struct {
 	// Text is free-form content, used on its own for anything that is not a
 	// decision, and for the human's words on an inbound message.
 	Text string `json:"text,omitempty"`
+	// Spoken marks Text as a machine transcription of a voice message rather
+	// than something the person typed. The words are theirs and the answer is
+	// real; how it was captured is not a detail, though — speech recognition
+	// mishears names, numbers and technical terms, which is most of what this
+	// fleet talks about, so a reader has to know to double-take on an odd word.
+	Spoken bool `json:"spoken,omitempty"`
 }
 
 // Progress is the "3/12" prefix of a batched run.

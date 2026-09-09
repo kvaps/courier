@@ -16,12 +16,23 @@ import (
 // recordingSink stands in for the daemon: it records the presses it was handed
 // and answers each one the way the service would.
 type recordingSink struct {
-	mu      sync.Mutex
-	presses []backend.Press
-	toast   string
+	mu       sync.Mutex
+	presses  []backend.Press
+	messages []backend.Inbound
+	toast    string
 }
 
-func (r *recordingSink) Receive(context.Context, string, backend.Inbound) {}
+func (r *recordingSink) Receive(_ context.Context, _ string, in backend.Inbound) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.messages = append(r.messages, in)
+}
+
+func (r *recordingSink) inbound() []backend.Inbound {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]backend.Inbound(nil), r.messages...)
+}
 
 func (r *recordingSink) Press(_ context.Context, _ string, p backend.Press) (backend.PressResult, error) {
 	r.mu.Lock()
@@ -293,5 +304,23 @@ func TestEditFallsBackWhenTheEmptyKeyboardIsRefused(t *testing.T) {
 	}
 	if strings.Contains(bodies[1], "reply_markup") {
 		t.Errorf("the retry still asked for a keyboard: %s", bodies[1])
+	}
+}
+
+// A restart hands the token over and produces a conflict or two on the way; a
+// rival poller produces one forever. Reporting the first as a failed channel is
+// how an operator learns to scroll past the second.
+func TestConflictReportIsQuietForAHandover(t *testing.T) {
+	for count := 1; count < conflictGrace; count++ {
+		if msg, failed := conflictReport(count); failed || msg != "" {
+			t.Errorf("conflict %d reported as a failure: %q", count, msg)
+		}
+	}
+	msg, failed := conflictReport(conflictGrace)
+	if !failed {
+		t.Fatalf("a conflict that keeps coming back is not reported: %q", msg)
+	}
+	if !strings.Contains(msg, "exactly one") {
+		t.Errorf("the failure does not say what is wrong: %q", msg)
 	}
 }

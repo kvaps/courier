@@ -26,13 +26,20 @@ const (
 // Draft offers the reader an answer somebody already wrote, as buttons under
 // the question, so confirming it costs one tap instead of composing a reply.
 //
-// This is the orchestrator's call and deliberately not an agent's. What the
-// buttons do is turn a decision into a reflex, and the value of that depends
-// entirely on somebody other than the asker having thought about the answer
-// first. An agent able to draft its own approval would be asking the reader to
-// rubber-stamp its own reasoning, which is the gate dissolving rather than the
-// gate working — so this lives on the HTTP API and has no MCP tool. The MCP
-// tool set is what an agent is handed; the API is what the orchestrator drives.
+// This is the orchestrator's call and deliberately not an agent's, and the
+// reason is narrower than "the drafter must not be the asker". An asker
+// proposing its own answer is the design already — a question carries the
+// sender's own recommendation and always has. What a button changes is not who
+// proposes but how cheap accepting is.
+//
+// The line is which askers. The workers are many and unsupervised, and an
+// answer authorises the work they are about to do; one that supplied both the
+// question and the approval of its own reasoning would leave the reader's
+// judgement with nothing to do. The orchestrator is a single watched party and
+// already the reader's own instrument, so it may draft an answer to a question
+// it asked itself. That is why this lives on the HTTP API and has no MCP tool:
+// the tool set is what an agent is handed, the API is what the orchestrator
+// drives, and the drafter is on the record either way.
 func (s *Service) Draft(ctx context.Context, question string, req DraftRequest) (*api.Message, error) {
 	q, err := s.messages.Get(question)
 	if err != nil {
@@ -165,9 +172,14 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 	}
 	draft, found := s.messageByRef(conv.Metadata.Name, p.Message.ID)
 	if !found {
+		s.log.Warn("a button press on a message this daemon does not know",
+			"conversation", conv.Metadata.Name, "ref", p.Message.ID, "from", p.Author)
 		return backend.PressResult{Toast: "These buttons are no longer live.", Alert: true}, nil
 	}
 	if !draft.DraftOpen() {
+		s.log.Info("a button press on a draft that is no longer on offer",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+			"phase", draft.Status.Phase, "from", p.Author)
 		if draft.Status.Phase == api.PhaseAnswered {
 			return backend.PressResult{Toast: "Already decided.", Alert: true}, nil
 		}
@@ -175,11 +187,16 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 	}
 	choice, ok := draft.ChoiceByRef(p.Choice)
 	if !ok {
+		s.log.Warn("a button press naming an option this draft does not carry",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name, "from", p.Author)
 		return backend.PressResult{Toast: "That option is not on this draft any more.", Alert: true}, nil
 	}
 
 	q, live := s.answerable(conv, draft.Spec.InReplyTo)
 	if !live {
+		s.log.Info("a button press arrived after its question was settled",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+			"question", draft.Spec.InReplyTo, "choice", choice.ID, "from", p.Author)
 		s.retire(ctx, conv, draft, "the question it answered was settled another way")
 		return backend.PressResult{
 			Toast: "Too late — that question is no longer open, so nothing was sent.",
@@ -248,15 +265,24 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 
 	// Rewrite the draft where the reader is looking, so a decision that has been
 	// taken stops looking like one still on offer.
-	s.editMessage(ctx, conv, settled,
+	edited := s.editMessage(ctx, conv, settled,
 		api.RenderChosen(settled.Spec.Body, settled.Spec.DraftedBy, settled.Spec.Choices, choice, p.Author))
+
+	s.log.Info("a drafted answer was taken",
+		"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "draft", draft.Metadata.Name,
+		"choice", choice.ID, "label", choice.Label, "drafted_by", draft.Spec.DraftedBy,
+		"by", p.Author, "rewritten", edited)
 
 	if conv.Spec.Agent != nil {
 		s.background(func() {
 			s.push(conv, stored, backend.Inbound{Author: p.Author, Text: choice.Answer, At: now})
 		})
 	}
-	return backend.PressResult{Toast: "✓ " + choice.Label}, nil
+	// Alert rather than the quieter toast, because a press that seems to do
+	// nothing gets pressed again. Editing the message raises no notification,
+	// so this is the only thing that happens at the moment of the tap, and what
+	// it confirms is a decision already on its way to an agent.
+	return backend.PressResult{Toast: "✓ \"" + choice.Label + "\" — sent to the agent as your answer.", Alert: true}, nil
 }
 
 // answerable reports whether a question is still the one this conversation is
@@ -272,6 +298,57 @@ func (s *Service) answerable(conv *api.Conversation, question string) (*api.Mess
 		return nil, false
 	}
 	return q, true
+}
+
+// heardDraftedBy is what the record says composed a transcript. It is not a
+// flourish: speech recognition is what actually chose those words, and the
+// approval that follows has to say so rather than crediting the speaker with
+// having written them out.
+const heardDraftedBy = "speech recognition"
+
+// offerHeard puts a transcript in front of the reader as an answer to confirm,
+// instead of letting a recognition result settle a question by itself.
+//
+// Transcription of technical speech is unreliable in exactly the places that
+// matter: identifiers, version numbers, and the difference between "send it"
+// and "don't send it" — one word. An agent acting on a misheard instruction is
+// the whole cost of this feature, and one tap is what stands in the way.
+//
+// It returns whether the transcript was taken care of here. When nothing is
+// being decided there is nothing to confirm, and the words travel as they are.
+func (s *Service) offerHeard(ctx context.Context, conv *api.Conversation, in backend.Inbound) bool {
+	q, ok := s.openQuestion(conv)
+	if !ok {
+		return false
+	}
+	// The reader has just spoken, so anything already on offer is older intent
+	// than what they said — and two keyboards for one decision is the thing the
+	// one-draft rule exists to prevent.
+	s.retireDrafts(ctx, conv, q.Metadata.Name, "the operator answered by voice instead")
+
+	offered, err := s.Send(ctx, &api.Message{
+		Spec: api.MessageSpec{
+			Conversation: conv.Metadata.Name,
+			InReplyTo:    q.Metadata.Name,
+			DraftedBy:    heardDraftedBy,
+			Choices: []api.Choice{{
+				ID:     "heard",
+				Label:  "Send as my answer",
+				Answer: in.Text,
+			}},
+		},
+	})
+	if err != nil {
+		// Deliberately still true: falling through would answer the question
+		// with the transcript, which is the one outcome this exists to prevent.
+		// The reader sees no confirmation and will say it again or write it.
+		s.log.Error("could not offer a transcript for confirmation",
+			"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "err", err)
+		return true
+	}
+	s.log.Info("offered a transcript for confirmation",
+		"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "draft", offered.Metadata.Name)
+	return true
 }
 
 // LiveDraft returns the question's outstanding drafted answer, if it has one —
@@ -338,7 +415,10 @@ func (s *Service) retireDrafts(ctx context.Context, conv *api.Conversation, ques
 
 // retire takes a drafted answer off the table, on the transport and in the store.
 func (s *Service) retire(ctx context.Context, conv *api.Conversation, draft *api.Message, note string) {
-	s.editMessage(ctx, conv, draft,
+	s.log.Info("taking a drafted answer off the table",
+		"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+		"question", draft.Spec.InReplyTo, "why", note)
+	_ = s.editMessage(ctx, conv, draft,
 		api.RenderRetired(draft.Spec.Body, draft.Spec.DraftedBy, draft.Spec.Choices, note))
 	draft.Status.Phase = api.PhaseCancelled
 	draft.Status.Message = note
@@ -347,18 +427,26 @@ func (s *Service) retire(ctx context.Context, conv *api.Conversation, draft *api
 	}
 }
 
-// editMessage rewrites a message already delivered. Every edit courier makes is
-// a message becoming final, so the transport clears any buttons with it.
-func (s *Service) editMessage(ctx context.Context, conv *api.Conversation, m *api.Message, text string) {
+// editMessage rewrites a message already delivered, reporting whether the
+// reader's screen actually changed. Every edit courier makes is a message
+// becoming final, so the transport clears any buttons with it.
+//
+// The outcome is returned rather than only logged because it is the difference
+// between a decision the reader can see and one they have to take on faith: if
+// this fails, the buttons are still on their screen under a question that has
+// already been answered.
+func (s *Service) editMessage(ctx context.Context, conv *api.Conversation, m *api.Message, text string) bool {
 	be, err := s.backendFor(conv.Spec.Channel)
 	if err != nil || m.Status.Ref == "" {
-		return
+		return false
 	}
 	ref := backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: m.Status.Ref}
 	if eerr := be.Edit(ctx, ref, text); eerr != nil {
 		s.log.Warn("could not rewrite a message the reader is looking at",
-			"message", m.Metadata.Name, "err", eerr)
+			"conversation", conv.Metadata.Name, "message", m.Metadata.Name, "err", eerr)
+		return false
 	}
+	return true
 }
 
 // newRef mints the handle a button carries. It is short because Telegram allows
