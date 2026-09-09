@@ -96,7 +96,7 @@ func (s *Server) closeConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.DeleteConversation(r.PathValue("name")); err != nil {
+	if err := s.svc.DeleteConversation(r.Context(), r.PathValue("name")); err != nil {
 		writeErr(w, err)
 		return
 	}

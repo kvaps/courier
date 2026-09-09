@@ -108,15 +108,26 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 	if !m.Open() {
 		return nil, api.NewInvalid("message %q is not an open question (phase %s)", name, m.Status.Phase)
 	}
-	conv, err := s.conversations.Get(m.Spec.Conversation)
-	if err != nil {
-		return nil, err
-	}
-
 	note := strings.TrimSpace(reason)
 	if note == "" {
 		note = "withdrawn"
 	}
+
+	// A message can outlive its conversation: threads get cleaned up while a
+	// question is still standing. Withdrawing must still work then — the point
+	// of cancel is to settle the message, and refusing because the thread is
+	// gone would leave it open forever with no way to close it. There is simply
+	// nothing left to strike on the transport.
+	conv, err := s.conversations.Get(m.Spec.Conversation)
+	if err != nil {
+		if !api.IsNotFound(err) {
+			return nil, err
+		}
+		m.Status.Phase = api.PhaseCancelled
+		m.Status.Message = note + " (its conversation no longer exists, so nothing was struck in the thread)"
+		return s.messages.UpdateStatus(m)
+	}
+
 	if be, berr := s.backendFor(conv.Spec.Channel); berr == nil && m.Status.Ref != "" {
 		ref := backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: m.Status.Ref}
 		struck := m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false) + "\n\n— " + note + " (no answer needed)"

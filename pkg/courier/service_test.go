@@ -703,3 +703,51 @@ func TestInboundFilesReachTheAgentAsPaths(t *testing.T) {
 		t.Errorf("attachment = %+v", list.Items[0].Spec.Attachments[0])
 	}
 }
+
+// A message can outlive its conversation: threads get cleaned up while a
+// question is still standing. Withdrawing must still settle the message —
+// refusing because the thread is gone would leave it open with no way to close
+// it, which is exactly what happened in practice.
+func TestCancelWorksAfterTheConversationIsGone(t *testing.T) {
+	svc, _, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "still relevant?")
+
+	// Removed behind the service's back, which is how the real orphan appeared:
+	// the thread went away without anything withdrawing the question first.
+	if err := svc.conversations.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Cancel(context.Background(), q.Metadata.Name, "moot")
+	if err != nil {
+		t.Fatalf("withdrawing an orphaned question failed: %v", err)
+	}
+	if got.Status.Phase != api.PhaseCancelled {
+		t.Errorf("phase = %s", got.Status.Phase)
+	}
+	if !contains(got.Status.Message, "no longer exists") {
+		t.Errorf("the record should say why nothing was struck: %q", got.Status.Message)
+	}
+}
+
+// Deleting a thread out from under an open question would leave it standing
+// forever: the person cannot answer in a place that is gone.
+func TestDeletingAConversationWithdrawsItsOpenQuestion(t *testing.T) {
+	svc, _, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "still relevant?")
+
+	if err := svc.DeleteConversation(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetMessage(q.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Open() {
+		t.Errorf("the question is still standing with nowhere to answer it: %+v", got.Status)
+	}
+	if got.Status.Phase != api.PhaseCancelled {
+		t.Errorf("phase = %s, want Cancelled", got.Status.Phase)
+	}
+}
