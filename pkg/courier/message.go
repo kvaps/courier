@@ -246,6 +246,14 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 	}
 	s.mark(ctx, conv, in.Ref, backend.MarkSeen)
 
+	// Words that were heard rather than typed do not settle a question on their
+	// own: they are offered back for confirmation first. Which conversation they
+	// belong to is decided by the thread they arrived in, never by anything in
+	// the words themselves.
+	if in.Spoken && s.offerHeard(ctx, conv, in) {
+		return
+	}
+
 	answered := s.recordAnswer(ctx, conv, in)
 
 	msg := &api.Message{
@@ -254,7 +262,7 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 		Spec: api.MessageSpec{
 			Conversation: conv.Metadata.Name,
 			Direction:    api.Inbound,
-			Body:         api.Body{Text: in.Text},
+			Body:         api.Body{Text: in.Text, Spoken: in.Spoken},
 			InReplyTo:    answered,
 			Attachments:  in.Files,
 		},
@@ -385,6 +393,13 @@ func (s *Service) envelope(conv *api.Conversation, stored *api.Message, in backe
 		body = b.String()
 	}
 	lead := fmt.Sprintf("%s wrote to you in %q:", from, conv.Spec.Title)
+	if stored.Spec.Body.Spoken {
+		lead = fmt.Sprintf(
+			"%s said this out loud in %q, and a machine wrote it down. The words are theirs; the spelling of them is a "+
+				"guess, and speech recognition is worst at exactly the things worth getting right — names, identifiers, "+
+				"version numbers, and the difference one short word makes. Read an odd word as an odd word, not as an instruction:",
+			from, conv.Spec.Title)
+	}
 	if a := stored.Status.Approval; a != nil {
 		// Said plainly, and not only in a field beside the text, because this is
 		// the sentence that stops a confirmed draft from being read as the

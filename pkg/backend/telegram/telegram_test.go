@@ -251,13 +251,26 @@ func TestAttachedFlattensEveryKind(t *testing.T) {
 	msg := &tgMessage{
 		Document: &tgFile{FileID: "d", FileName: "notes.md"},
 		Video:    &tgFile{FileID: "v"},
-		Voice:    &tgFile{FileID: "a"},
+		Audio:    &tgFile{FileID: "a"},
 	}
 	if got := attached(msg); len(got) != 3 {
 		t.Errorf("got %d files, want 3", len(got))
 	}
 	if got := attached(&tgMessage{Text: "no files here"}); got != nil {
 		t.Errorf("got %v, want nil", got)
+	}
+}
+
+// A voice message is the one attachment whose bytes are not the content — the
+// content is what was said. It is transcribed rather than downloaded, so a copy
+// of the audio on disk would be a file nothing ever opens. An audio file sent
+// as a file is a different thing and is still carried.
+func TestAVoiceMessageIsNotADownload(t *testing.T) {
+	if got := attached(&tgMessage{Voice: &tgFile{FileID: "v"}}); len(got) != 0 {
+		t.Errorf("a voice message was queued for download: %+v", got)
+	}
+	if got := attached(&tgMessage{Audio: &tgFile{FileID: "a", FileName: "track.mp3"}}); len(got) != 1 {
+		t.Errorf("an audio file was dropped: %+v", got)
 	}
 }
 

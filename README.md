@@ -73,6 +73,8 @@ Drawing approval buttons is **not** in this table, and that is the point — see
 
 **Files travel both ways.** `send` and `ask` take `files` — absolute paths on this machine, uploaded so the reader gets the screenshot or the log itself rather than a path they cannot open from a phone. A message may be nothing but a file. In the other direction, a file the person sends is downloaded before the agent hears about it: the message's `spec.attachments[].path` is an ordinary local file, and the envelope the agent receives names it. Telegram caps a bot at 50 MB up and 20 MB down; courier refuses anything larger up front, naming the file, rather than failing mid-upload.
 
+A voice message is the exception, and it is not downloaded at all — see [Answering out loud](#answering-out-loud). Its bytes are not the content; what was said is, and an agent has no ears.
+
 A received filename is a hint and never a path. Courier builds the name on disk itself — separators removed, prefixed with the file's id so two people sending `screenshot.png` do not overwrite each other — because these paths are handed to agents.
 
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
@@ -141,6 +143,42 @@ curl -s localhost:7717/api/healthz | jq .waiting
 **Pressing is driving an agent, so `allowFrom` covers it.** A tap arrives as a `callback_query` with its own sender, not as a message, and it is checked against the same allow-list. Without that, anyone who can see the group could close another person's question with a thumb. The group is two people today, which is exactly the kind of fact that quietly stops being true.
 
 **Buttons are optional.** A question asked without a draft is sent, rendered and answered exactly as it was before any of this existed.
+
+## Answering out loud
+
+Talking is faster than typing, especially on a phone, so courier turns a voice message into words. The audio is never downloaded: an agent cannot open an `.oga`, and a copy on disk would be a file nothing ever reads.
+
+The bot cannot do this itself. Telegram transcribes for a *user account*, and courier is a bot — so it asks something that already has that account's session, over MCP:
+
+```sh
+courier serve --telegram-chat … --telegram-transcribe http://127.0.0.1:8787/mcp
+```
+
+That endpoint is [mcp-tg](https://github.com/lexfrei/mcp-tg), whose `tg_messages_transcribe_audio` takes a chat and a message id. Point courier at a client that is already running rather than starting one: two clients on one Telegram account is how you earn `AUTH_KEY_DUPLICATED`. The account needs Telegram Premium for transcription, and it has to be in the group — otherwise the message id resolves to nothing.
+
+**A transcript never settles a question by itself.** Recognition of technical speech is wrong in exactly the places that matter — identifiers, version numbers, and the difference between "send it" and "don't send it", which is one short word. So when the thread is waiting on an answer, what you said comes back as a draft with one button:
+
+```
+Draft by speech recognition:
+
+▸ Send as my answer — keep one honest sentence about isolation
+
+Tap one — or write your own answer.
+
+           ┌────────────────────┐
+           │ Send as my answer  │
+           └────────────────────┘
+```
+
+Tap it and it becomes the answer, recorded as an approval: `draftedBy: speech recognition`, confirmed by you. Say it wrong and you fix it the way you fix any draft — type the correction, which answers the question and takes the offer down. There is no second button for that, because typing already does it.
+
+**Which agent hears it is decided by the topic, never by the words.** A misheard sentence can be wrong about anything except where it goes.
+
+When nothing is waiting on an answer there is nothing to confirm, and the words travel as they are — marked as heard rather than typed, with the envelope telling the agent to read an odd word as an odd word rather than as an instruction.
+
+**A voice message that cannot be transcribed is not delivered, and you are told so in the thread.** Premium missing, Telegram still working on it, or nothing configured at all — each says which, where you spoke. Silence would be the worst of the available outcomes: you would believe you had answered.
+
+Transcription happens on the receive loop, so its wait is time no other message is being read. Twenty seconds by default, and `--telegram-transcribe-wait` moves it; a note that has not come back by then is better reported than waited on.
 
 ## The API
 

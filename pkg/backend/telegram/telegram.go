@@ -63,6 +63,10 @@ type Config struct {
 	AllowFrom []int64 `json:"allowFrom,omitempty"`
 	// PollTimeout is the getUpdates long-poll timeout in seconds.
 	PollTimeout int `json:"pollTimeout,omitempty"`
+	// Transcribe, when set, turns voice messages into words. Without it a voice
+	// message is not carried at all: an agent has no ears, and handing it the
+	// path to an .oga it cannot open is a delivery in name only.
+	Transcribe *TranscribeConfig `json:"transcribe,omitempty"`
 
 	// Token is refused. It exists in the struct only so that supplying one is
 	// a clear error instead of a silently ignored field.
@@ -76,6 +80,8 @@ type Backend struct {
 	inboxDir string
 	cfg      Config
 	api      *botAPI
+
+	hear *transcriber
 
 	mu     sync.RWMutex
 	chatID int64
@@ -121,11 +127,16 @@ func newBackend(env backend.Env, raw json.RawMessage) (backend.Backend, error) {
 	if err != nil {
 		return nil, err
 	}
+	hear, err := newTranscriber(cfg.Transcribe)
+	if err != nil {
+		return nil, err
+	}
 	allow := map[int64]bool{}
 	for _, id := range cfg.AllowFrom {
 		allow[id] = true
 	}
 	return &Backend{
+		hear:     hear,
 		channel:  env.Channel,
 		stateDir: env.StateDir,
 		inboxDir: env.InboxDir,

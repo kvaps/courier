@@ -491,3 +491,121 @@ func TestAWithdrawnQuestionSaysSoFirst(t *testing.T) {
 		t.Errorf("the question itself is gone:\n%s", edit)
 	}
 }
+
+// sayHeard puts words in the human's mouth the way a transcription arrives:
+// spoken, not typed.
+func sayHeard(t *testing.T, be *fakeBackend, thread backend.ThreadRef, text string) {
+	t.Helper()
+	sink := be.waitSink(t)
+	sink.Receive(context.Background(), "chan", backend.Inbound{
+		Thread: thread,
+		Ref:    backend.MessageRef{Thread: thread, ID: "voice"},
+		Author: "@tester",
+		Text:   text,
+		Spoken: true,
+		At:     time.Now().UTC(),
+	})
+}
+
+// Recognition of technical speech is wrong in exactly the places that matter,
+// and "send it" and "don't send it" differ by one word. So a transcript is put
+// back in front of the reader as an answer to confirm, and the question stays
+// open until they do.
+func TestATranscriptIsOfferedRatherThanAnswering(t *testing.T) {
+	svc, be, sink := newService(t)
+	conv := openConv(t, svc, "a", &api.AgentRef{Sink: "fake", Address: "s1"})
+	q := ask(t, svc, "a", "Mention security at all?")
+
+	sayHeard(t, be, backend.ThreadRef(conv.Status.Ref), "оставь одно предложение про изоляцию")
+
+	still, err := svc.GetMessage(q.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !still.Open() {
+		t.Fatalf("a transcript settled the question on its own: %s / %q", still.Status.Phase, still.Status.Answer)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := sink.got(); len(got) != 0 {
+		t.Fatalf("a transcript reached the agent unconfirmed: %v", got)
+	}
+
+	d, ok := svc.LiveDraft(q.Metadata.Name)
+	if !ok {
+		t.Fatal("nothing was offered for confirmation")
+	}
+	if d.Spec.DraftedBy != heardDraftedBy {
+		t.Errorf("draftedBy = %q — the record must say a machine chose these words", d.Spec.DraftedBy)
+	}
+	if len(d.Spec.Choices) != 1 || d.Spec.Choices[0].Answer != "оставь одно предложение про изоляцию" {
+		t.Fatalf("choices = %+v", d.Spec.Choices)
+	}
+	out := be.sent[len(be.sent)-1]
+	if !strings.Contains(out.Text, "оставь одно предложение про изоляцию") {
+		t.Errorf("the reader cannot see what was heard:\n%s", out.Text)
+	}
+
+	// One tap sends it, and the approval says whose words they were.
+	press(t, be, svc, d, "heard")
+	answered, err := svc.GetMessage(q.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered.Status.Answer != "оставь одно предложение про изоляцию" {
+		t.Errorf("answer = %q", answered.Status.Answer)
+	}
+	if a := answered.Status.Approval; a == nil || a.DraftedBy != heardDraftedBy {
+		t.Errorf("approval = %+v", a)
+	}
+}
+
+// Typing instead of tapping is the correction path, and it needs no button of
+// its own: it answers the question and takes the offer down.
+func TestTypingCorrectsAMisheardTranscript(t *testing.T) {
+	svc, be, _ := newService(t)
+	conv := openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "Mention security at all?")
+
+	sayHeard(t, be, backend.ThreadRef(conv.Status.Ref), "отправляй")
+	d, ok := svc.LiveDraft(q.Metadata.Name)
+	if !ok {
+		t.Fatal("nothing was offered for confirmation")
+	}
+
+	be.say(t, backend.ThreadRef(conv.Status.Ref), "НЕ отправляй")
+
+	answered, err := svc.GetMessage(q.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered.Status.Answer != "НЕ отправляй" {
+		t.Errorf("answer = %q — the correction did not win", answered.Status.Answer)
+	}
+	if answered.Status.Approval != nil {
+		t.Error("a typed correction was recorded as somebody else's draft")
+	}
+	retired, err := svc.GetMessage(d.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.Status.Phase != api.PhaseCancelled {
+		t.Errorf("the misheard offer is still live: %s", retired.Status.Phase)
+	}
+}
+
+// With nothing being decided there is nothing to confirm, so the words travel
+// as they are — carrying the fact that they were heard rather than typed.
+func TestUnpromptedSpeechTravelsMarkedAsHeard(t *testing.T) {
+	svc, be, sink := newService(t)
+	conv := openConv(t, svc, "a", &api.AgentRef{Sink: "fake", Address: "s1"})
+
+	sayHeard(t, be, backend.ThreadRef(conv.Status.Ref), "посмотри на второй PR")
+
+	waitFor(t, func() bool { return len(sink.got()) > 0 })
+	env := sink.got()[0]
+	for _, want := range []string{"said this out loud", "посмотри на второй PR", "speech recognition is worst"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the envelope does not say %q:\n%s", want, env)
+		}
+	}
+}

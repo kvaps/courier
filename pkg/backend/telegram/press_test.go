@@ -16,12 +16,23 @@ import (
 // recordingSink stands in for the daemon: it records the presses it was handed
 // and answers each one the way the service would.
 type recordingSink struct {
-	mu      sync.Mutex
-	presses []backend.Press
-	toast   string
+	mu       sync.Mutex
+	presses  []backend.Press
+	messages []backend.Inbound
+	toast    string
 }
 
-func (r *recordingSink) Receive(context.Context, string, backend.Inbound) {}
+func (r *recordingSink) Receive(_ context.Context, _ string, in backend.Inbound) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.messages = append(r.messages, in)
+}
+
+func (r *recordingSink) inbound() []backend.Inbound {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]backend.Inbound(nil), r.messages...)
+}
 
 func (r *recordingSink) Press(_ context.Context, _ string, p backend.Press) (backend.PressResult, error) {
 	r.mu.Lock()

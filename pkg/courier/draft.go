@@ -293,6 +293,57 @@ func (s *Service) answerable(conv *api.Conversation, question string) (*api.Mess
 	return q, true
 }
 
+// heardDraftedBy is what the record says composed a transcript. It is not a
+// flourish: speech recognition is what actually chose those words, and the
+// approval that follows has to say so rather than crediting the speaker with
+// having written them out.
+const heardDraftedBy = "speech recognition"
+
+// offerHeard puts a transcript in front of the reader as an answer to confirm,
+// instead of letting a recognition result settle a question by itself.
+//
+// Transcription of technical speech is unreliable in exactly the places that
+// matter: identifiers, version numbers, and the difference between "send it"
+// and "don't send it" — one word. An agent acting on a misheard instruction is
+// the whole cost of this feature, and one tap is what stands in the way.
+//
+// It returns whether the transcript was taken care of here. When nothing is
+// being decided there is nothing to confirm, and the words travel as they are.
+func (s *Service) offerHeard(ctx context.Context, conv *api.Conversation, in backend.Inbound) bool {
+	q, ok := s.openQuestion(conv)
+	if !ok {
+		return false
+	}
+	// The reader has just spoken, so anything already on offer is older intent
+	// than what they said — and two keyboards for one decision is the thing the
+	// one-draft rule exists to prevent.
+	s.retireDrafts(ctx, conv, q.Metadata.Name, "the operator answered by voice instead")
+
+	offered, err := s.Send(ctx, &api.Message{
+		Spec: api.MessageSpec{
+			Conversation: conv.Metadata.Name,
+			InReplyTo:    q.Metadata.Name,
+			DraftedBy:    heardDraftedBy,
+			Choices: []api.Choice{{
+				ID:     "heard",
+				Label:  "Send as my answer",
+				Answer: in.Text,
+			}},
+		},
+	})
+	if err != nil {
+		// Deliberately still true: falling through would answer the question
+		// with the transcript, which is the one outcome this exists to prevent.
+		// The reader sees no confirmation and will say it again or write it.
+		s.log.Error("could not offer a transcript for confirmation",
+			"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "err", err)
+		return true
+	}
+	s.log.Info("offered a transcript for confirmation",
+		"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "draft", offered.Metadata.Name)
+	return true
+}
+
 // LiveDraft returns the question's outstanding drafted answer, if it has one —
 // what the reader currently has on their screen for this decision.
 func (s *Service) LiveDraft(question string) (*api.Message, bool) {
