@@ -227,7 +227,7 @@ func (s *Service) Receive(ctx context.Context, channel string, in backend.Inboun
 		s.mark(ctx, conv, in.Ref, backend.MarkAccepted)
 		return
 	}
-	go s.push(conv, stored, in)
+	s.background(func() { s.push(conv, stored, in) })
 }
 
 // recordAnswer lands an inbound message on the conversation's open question, if
