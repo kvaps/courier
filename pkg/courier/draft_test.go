@@ -126,8 +126,24 @@ func TestPressAnswersTheQuestionWithTheDraft(t *testing.T) {
 	q := ask(t, svc, "a", "Mention security at all?")
 	d := draft(t, svc, q.Metadata.Name, sendRefuse())
 
-	if res := press(t, be, svc, d, "send"); !strings.Contains(res.Toast, "Send") {
-		t.Errorf("toast = %q", res.Toast)
+	res := press(t, be, svc, d, "send")
+	// A press that seems to do nothing gets pressed again, and editing the
+	// message raises no notification — so the acknowledgement over the button is
+	// the only thing that happens at the moment of the tap, and it insists.
+	if !strings.Contains(res.Toast, "Send") || !strings.Contains(res.Toast, "sent to the agent") {
+		t.Errorf("toast = %q — it does not say what happened", res.Toast)
+	}
+	if !res.Alert {
+		t.Error("a taken decision was acknowledged with the toast that fades on its own")
+	}
+
+	// And the outcome leads the rewritten message, for the reader who comes back
+	// to the thread later.
+	be.mu.Lock()
+	edit := be.edits[d.Status.Ref]
+	be.mu.Unlock()
+	if !strings.HasPrefix(edit, "✓ @tester chose \"Send\"") {
+		t.Errorf("the outcome is buried in the rewritten draft:\n%s", edit)
 	}
 
 	got, err := svc.GetMessage(q.Metadata.Name)
@@ -451,5 +467,27 @@ func TestAQuestionWithoutADraftIsUnchanged(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(out.Text), api.DefaultReplyPrompt) {
 		t.Errorf("question text = %q", out.Text)
+	}
+}
+
+// The same defect the approval marker had: an edit raises no notification, so a
+// note appended after the whole question is not something the reader notices on
+// a screen they are already looking at.
+func TestAWithdrawnQuestionSaysSoFirst(t *testing.T) {
+	svc, be, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "Mention security at all?")
+
+	if _, err := svc.Cancel(context.Background(), q.Metadata.Name, "answered elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+	be.mu.Lock()
+	edit := be.edits[q.Status.Ref]
+	be.mu.Unlock()
+	if !strings.HasPrefix(edit, "— answered elsewhere (no answer needed)") {
+		t.Errorf("the withdrawal is buried:\n%s", edit)
+	}
+	if !strings.Contains(edit, "Mention security at all?") {
+		t.Errorf("the question itself is gone:\n%s", edit)
 	}
 }

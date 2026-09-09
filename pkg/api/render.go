@@ -80,25 +80,31 @@ func RenderDraft(b Body, draftedBy string, choices []Choice, prompt string) stri
 // offer, with the buttons gone and a line saying who took which option. The
 // options that were not taken stay on screen — the record of what was on offer
 // is half of what makes an approval reviewable afterwards.
+//
+// The outcome goes first, and that placement is the whole point. Editing a
+// message raises no notification: the reader is looking at the same screen they
+// were before, and a mark appended after several paragraphs of options is not
+// something they will find. Someone who cannot tell whether their tap did
+// anything presses again.
 func RenderChosen(b Body, draftedBy string, choices []Choice, taken Choice, by string) string {
 	who := strings.TrimSpace(by)
 	if who == "" {
 		who = "the operator"
 	}
-	parts := append(draftParts(b, draftedBy, choices),
-		"✓ "+who+" chose \""+taken.Label+"\" — sent as the answer")
-	return strings.Join(parts, "\n\n")
+	head := "✓ " + who + " chose \"" + taken.Label + "\" — sent as the answer"
+	return strings.Join(append([]string{head}, draftParts(b, draftedBy, choices)...), "\n\n")
 }
 
 // RenderRetired is the draft with its buttons withdrawn and the reason on it,
-// for when the question it answered was settled some other way.
+// for when the question it answered was settled some other way. The reason
+// leads, for the same reason the outcome does above.
 func RenderRetired(b Body, draftedBy string, choices []Choice, note string) string {
 	n := strings.TrimSpace(note)
 	if n == "" {
 		n = "withdrawn"
 	}
-	parts := append(draftParts(b, draftedBy, choices), "— "+n+" (nothing was sent)")
-	return strings.Join(parts, "\n\n")
+	head := "— " + n + " (nothing was sent)"
+	return strings.Join(append([]string{head}, draftParts(b, draftedBy, choices)...), "\n\n")
 }
 
 func draftParts(b Body, draftedBy string, choices []Choice) []string {

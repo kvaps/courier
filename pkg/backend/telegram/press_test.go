@@ -295,3 +295,21 @@ func TestEditFallsBackWhenTheEmptyKeyboardIsRefused(t *testing.T) {
 		t.Errorf("the retry still asked for a keyboard: %s", bodies[1])
 	}
 }
+
+// A restart hands the token over and produces a conflict or two on the way; a
+// rival poller produces one forever. Reporting the first as a failed channel is
+// how an operator learns to scroll past the second.
+func TestConflictReportIsQuietForAHandover(t *testing.T) {
+	for count := 1; count < conflictGrace; count++ {
+		if msg, failed := conflictReport(count); failed || msg != "" {
+			t.Errorf("conflict %d reported as a failure: %q", count, msg)
+		}
+	}
+	msg, failed := conflictReport(conflictGrace)
+	if !failed {
+		t.Fatalf("a conflict that keeps coming back is not reported: %q", msg)
+	}
+	if !strings.Contains(msg, "exactly one") {
+		t.Errorf("the failure does not say what is wrong: %q", msg)
+	}
+}

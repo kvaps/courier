@@ -164,7 +164,10 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 	s.retireDrafts(ctx, conv, name, "the question it answered was withdrawn")
 	if be, berr := s.backendFor(conv.Spec.Channel); berr == nil && m.Status.Ref != "" {
 		ref := backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: m.Status.Ref}
-		struck := m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false) + "\n\n— " + note + " (no answer needed)"
+		// The note leads rather than trails: an edit raises no notification, so
+		// a line appended after the whole question is not something the reader
+		// will notice on a screen they are already looking at.
+		struck := "— " + note + " (no answer needed)\n\n" + m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false)
 		if eerr := be.Edit(ctx, ref, struck); eerr != nil {
 			if _, serr := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
 				Text: "— " + note + ": the question above no longer needs an answer",

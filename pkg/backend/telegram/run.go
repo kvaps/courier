@@ -19,6 +19,14 @@ import (
 const (
 	backoffMin = 2 * time.Second
 	backoffMax = 60 * time.Second
+	// conflictGrace is how many conflicts in a row are taken as a handover
+	// rather than a rival. Restarting the daemon produces one or two: the
+	// process being replaced still holds a long poll open, and Telegram takes a
+	// moment to notice the connection is gone. Reporting that as a failed
+	// channel trains the operator to ignore the message that matters — the
+	// other poller that never goes away. Past this count the channel goes
+	// Failed exactly as before, about six seconds in.
+	conflictGrace = 3
 )
 
 // Run consumes inbound Telegram traffic until ctx is cancelled.
@@ -44,10 +52,13 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 			}
 			if isConflict(err) {
 				conflicts++
-				msg := "another process is polling this bot token — Telegram allows exactly one. " +
-					"Give courier its own bot, or stop the other poller"
-				log.Error("getUpdates conflict", "count", conflicts, "retry_in", backoff)
-				sink.SetStatus(ctx, b.channel, api.PhaseFailed, msg)
+				if msg, failed := conflictReport(conflicts); failed {
+					log.Error("getUpdates conflict", "count", conflicts, "retry_in", backoff)
+					sink.SetStatus(ctx, b.channel, api.PhaseFailed, msg)
+				} else {
+					log.Info("getUpdates conflict; waiting for the previous poller to let go",
+						"count", conflicts, "retry_in", backoff)
+				}
 			} else {
 				log.Warn("getUpdates failed", "err", err, "retry_in", backoff)
 				sink.SetStatus(ctx, b.channel, api.PhaseFailed, err.Error())
@@ -72,6 +83,25 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 		}
 	}
 	return nil
+}
+
+// conflictReport decides how a run of getUpdates conflicts should be reported.
+//
+// The two cases look identical on the wire and could not be less alike in
+// meaning. A restart produces a conflict or two while the process being
+// replaced lets go of its long poll, and it clears itself. A second poller that
+// is there to stay — the Claude Code Telegram plugin, most often — produces one
+// every time, and it is the failure that looks like an outage and is not: the
+// daemon keeps sending, the topics fill up, and replies simply never arrive.
+//
+// So the first few are quiet and the rest are loud. Calling a handover a failed
+// channel is how an operator learns to scroll past the message that matters.
+func conflictReport(count int) (message string, failed bool) {
+	if count < conflictGrace {
+		return "", false
+	}
+	return "another process is polling this bot token — Telegram allows exactly one. " +
+		"Give courier its own bot, or stop the other poller", true
 }
 
 // handle turns one update into an inbound message or a button press, dropping
@@ -154,6 +184,12 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 	if cq.Message.ThreadID > 0 {
 		ref = backend.ThreadRef(strconv.Itoa(cq.Message.ThreadID))
 	}
+	// Logged on arrival, before the daemon decides anything. A press is the one
+	// inbound event that leaves no trace in the chat when it goes wrong — the
+	// message it was on looks the same either way — so the log is the only place
+	// anyone can find out that it happened at all.
+	log.Info("button press", "from", cq.From.label(), "thread", ref, "message", cq.Message.MessageID)
+
 	res, err := sink.Press(ctx, b.channel, backend.Press{
 		Thread:   ref,
 		Message:  backend.MessageRef{Thread: ref, ID: strconv.Itoa(cq.Message.MessageID)},
@@ -167,6 +203,7 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 		log.Warn("a button press was refused", "from", cq.From.ID, "err", err)
 		toast, alert = err.Error(), true
 	}
+	log.Debug("acknowledging a button press", "from", cq.From.label(), "toast", toast, "alert", alert)
 	b.answerPress(ctx, cq.ID, toast, alert)
 }
 

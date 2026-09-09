@@ -177,3 +177,26 @@ func TestRenderRetiredSaysNothingWasSent(t *testing.T) {
 		t.Errorf("a retired draft does not say what became of it:\n%s", got)
 	}
 }
+
+// Editing a message raises no notification: the reader is looking at the same
+// screen as before. A mark appended after several paragraphs of options is not
+// something they will find, and someone who cannot tell whether their tap did
+// anything presses again — which is exactly what happened in the first live use.
+func TestTheOutcomeOfADraftLeads(t *testing.T) {
+	choices := []Choice{
+		{ID: "send", Label: "Send", Answer: "Keep one honest sentence."},
+		{ID: "refuse", Label: "Refuse", Answer: "Drop it."},
+	}
+	chosen := RenderChosen(Body{Text: "framing"}, "orchestrator", choices, choices[0], "@kvaps")
+	if !strings.HasPrefix(chosen, `✓ @kvaps chose "Send"`) {
+		t.Errorf("the outcome is not the first thing read:\n%s", chosen)
+	}
+	retired := RenderRetired(Body{Text: "framing"}, "orchestrator", choices, "answered by hand")
+	if !strings.HasPrefix(retired, "— answered by hand") {
+		t.Errorf("the reason is not the first thing read:\n%s", retired)
+	}
+	// The offer itself is still there to read underneath.
+	if !strings.Contains(chosen, "▸ Refuse — Drop it.") {
+		t.Errorf("the options that were not taken are gone:\n%s", chosen)
+	}
+}

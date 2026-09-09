@@ -119,6 +119,8 @@ Tap one — or write your own answer.
 
 You tap `Send`. The agent's `ask` returns with the whole drafted sentence as its answer, the message is rewritten in place to say what you chose, and the buttons go away.
 
+**Editing a message raises no notification**, which is worth knowing because it shaped two things. A pop-up over the button confirms the tap immediately — the insistent kind you dismiss, not the banner that fades, because a press that seems to do nothing gets pressed again. And the outcome is written at the *top* of the rewritten message, not appended after the options, so it is still the first thing you read when you come back to the thread an hour later. Both were learned the first time somebody used this and said "I don't see any reaction".
+
 **Every option's words are on screen, never only its label.** A button says "Send"; a reader who taps it without having seen what gets sent has approved nothing. Those words are also why the button cannot carry them: Telegram allows a button 64 bytes of data, so it carries a handle courier mints and the answer stays in the Message resource — which is what lets the whole offer, and not only the option taken, be read back afterwards.
 
 **The answer says whose words it is.** `status.approval` names the drafter, the option taken and the draft it came from, and the text delivered into the agent's session says it in a sentence: *these are not their own words, the orchestrator drafted them and the operator confirmed the draft by choosing "Send".* That is not politeness. A one-tap approval is cheap, and a cheap approval becomes reflexive; when a decision turns out to have been wrong, the record has to lead back to whoever actually composed it rather than crediting you with authorship you never had.
@@ -195,6 +197,13 @@ It is read from the environment or a `KEY=VALUE` file, and from nowhere else. It
 This is not theoretical — it happened. The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env`, and it starts **on every session start**, not once. So each new Claude Code session took the token back, courier's poll began returning `409 Conflict`, and every message written in the group from then on went to the plugin instead. Sending kept working, which is what makes it disorienting: the daemon looks alive, the topics fill up, and replies simply never arrive.
 
 The cure was to disable the plugin (`telegram@claude-plugins-official`). The alternative, if you want both, is to give courier its own bot: create one in @BotFather, add it to the group as an administrator with `can_manage_topics`, and start courier with `TELEGRAM_BOT_TOKEN` set in its own environment. Sending is unaffected either way — several bots may post into the same group.
+
+**Restarting produces one of these, and it is not the same thing.** The process being replaced still holds a long poll open, and Telegram takes a second or two to notice the connection is gone, so a new daemon started immediately gets a conflict or two and then settles. Those are logged and nothing else; only from the third in a row does the channel go `Failed`, about six seconds in. The distinction is the point — calling a handover a failed channel is how an operator learns to scroll past the message that matters. To avoid them entirely, let the old process exit before starting the new one:
+
+```sh
+kill "$(pgrep -f 'courier serve')" && while pgrep -f 'courier serve' >/dev/null; do sleep 0.5; done
+courier serve --telegram-chat …
+```
 
 **`/api/healthz` is what finds this.** A channel that loses its poll goes to `Failed`, health flips to `degraded`, and the channel's `status.message` names the conflict. Check it before assuming the group is quiet:
 

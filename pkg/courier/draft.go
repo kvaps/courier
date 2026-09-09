@@ -165,9 +165,14 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 	}
 	draft, found := s.messageByRef(conv.Metadata.Name, p.Message.ID)
 	if !found {
+		s.log.Warn("a button press on a message this daemon does not know",
+			"conversation", conv.Metadata.Name, "ref", p.Message.ID, "from", p.Author)
 		return backend.PressResult{Toast: "These buttons are no longer live.", Alert: true}, nil
 	}
 	if !draft.DraftOpen() {
+		s.log.Info("a button press on a draft that is no longer on offer",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+			"phase", draft.Status.Phase, "from", p.Author)
 		if draft.Status.Phase == api.PhaseAnswered {
 			return backend.PressResult{Toast: "Already decided.", Alert: true}, nil
 		}
@@ -175,11 +180,16 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 	}
 	choice, ok := draft.ChoiceByRef(p.Choice)
 	if !ok {
+		s.log.Warn("a button press naming an option this draft does not carry",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name, "from", p.Author)
 		return backend.PressResult{Toast: "That option is not on this draft any more.", Alert: true}, nil
 	}
 
 	q, live := s.answerable(conv, draft.Spec.InReplyTo)
 	if !live {
+		s.log.Info("a button press arrived after its question was settled",
+			"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+			"question", draft.Spec.InReplyTo, "choice", choice.ID, "from", p.Author)
 		s.retire(ctx, conv, draft, "the question it answered was settled another way")
 		return backend.PressResult{
 			Toast: "Too late — that question is no longer open, so nothing was sent.",
@@ -248,15 +258,24 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 
 	// Rewrite the draft where the reader is looking, so a decision that has been
 	// taken stops looking like one still on offer.
-	s.editMessage(ctx, conv, settled,
+	edited := s.editMessage(ctx, conv, settled,
 		api.RenderChosen(settled.Spec.Body, settled.Spec.DraftedBy, settled.Spec.Choices, choice, p.Author))
+
+	s.log.Info("a drafted answer was taken",
+		"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "draft", draft.Metadata.Name,
+		"choice", choice.ID, "label", choice.Label, "drafted_by", draft.Spec.DraftedBy,
+		"by", p.Author, "rewritten", edited)
 
 	if conv.Spec.Agent != nil {
 		s.background(func() {
 			s.push(conv, stored, backend.Inbound{Author: p.Author, Text: choice.Answer, At: now})
 		})
 	}
-	return backend.PressResult{Toast: "✓ " + choice.Label}, nil
+	// Alert rather than the quieter toast, because a press that seems to do
+	// nothing gets pressed again. Editing the message raises no notification,
+	// so this is the only thing that happens at the moment of the tap, and what
+	// it confirms is a decision already on its way to an agent.
+	return backend.PressResult{Toast: "✓ \"" + choice.Label + "\" — sent to the agent as your answer.", Alert: true}, nil
 }
 
 // answerable reports whether a question is still the one this conversation is
@@ -338,7 +357,10 @@ func (s *Service) retireDrafts(ctx context.Context, conv *api.Conversation, ques
 
 // retire takes a drafted answer off the table, on the transport and in the store.
 func (s *Service) retire(ctx context.Context, conv *api.Conversation, draft *api.Message, note string) {
-	s.editMessage(ctx, conv, draft,
+	s.log.Info("taking a drafted answer off the table",
+		"conversation", conv.Metadata.Name, "message", draft.Metadata.Name,
+		"question", draft.Spec.InReplyTo, "why", note)
+	_ = s.editMessage(ctx, conv, draft,
 		api.RenderRetired(draft.Spec.Body, draft.Spec.DraftedBy, draft.Spec.Choices, note))
 	draft.Status.Phase = api.PhaseCancelled
 	draft.Status.Message = note
@@ -347,18 +369,26 @@ func (s *Service) retire(ctx context.Context, conv *api.Conversation, draft *api
 	}
 }
 
-// editMessage rewrites a message already delivered. Every edit courier makes is
-// a message becoming final, so the transport clears any buttons with it.
-func (s *Service) editMessage(ctx context.Context, conv *api.Conversation, m *api.Message, text string) {
+// editMessage rewrites a message already delivered, reporting whether the
+// reader's screen actually changed. Every edit courier makes is a message
+// becoming final, so the transport clears any buttons with it.
+//
+// The outcome is returned rather than only logged because it is the difference
+// between a decision the reader can see and one they have to take on faith: if
+// this fails, the buttons are still on their screen under a question that has
+// already been answered.
+func (s *Service) editMessage(ctx context.Context, conv *api.Conversation, m *api.Message, text string) bool {
 	be, err := s.backendFor(conv.Spec.Channel)
 	if err != nil || m.Status.Ref == "" {
-		return
+		return false
 	}
 	ref := backend.MessageRef{Thread: backend.ThreadRef(conv.Status.Ref), ID: m.Status.Ref}
 	if eerr := be.Edit(ctx, ref, text); eerr != nil {
 		s.log.Warn("could not rewrite a message the reader is looking at",
-			"message", m.Metadata.Name, "err", eerr)
+			"conversation", conv.Metadata.Name, "message", m.Metadata.Name, "err", eerr)
+		return false
 	}
+	return true
 }
 
 // newRef mints the handle a button carries. It is short because Telegram allows
