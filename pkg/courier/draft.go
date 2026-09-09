@@ -26,13 +26,20 @@ const (
 // Draft offers the reader an answer somebody already wrote, as buttons under
 // the question, so confirming it costs one tap instead of composing a reply.
 //
-// This is the orchestrator's call and deliberately not an agent's. What the
-// buttons do is turn a decision into a reflex, and the value of that depends
-// entirely on somebody other than the asker having thought about the answer
-// first. An agent able to draft its own approval would be asking the reader to
-// rubber-stamp its own reasoning, which is the gate dissolving rather than the
-// gate working — so this lives on the HTTP API and has no MCP tool. The MCP
-// tool set is what an agent is handed; the API is what the orchestrator drives.
+// This is the orchestrator's call and deliberately not an agent's, and the
+// reason is narrower than "the drafter must not be the asker". An asker
+// proposing its own answer is the design already — a question carries the
+// sender's own recommendation and always has. What a button changes is not who
+// proposes but how cheap accepting is.
+//
+// The line is which askers. The workers are many and unsupervised, and an
+// answer authorises the work they are about to do; one that supplied both the
+// question and the approval of its own reasoning would leave the reader's
+// judgement with nothing to do. The orchestrator is a single watched party and
+// already the reader's own instrument, so it may draft an answer to a question
+// it asked itself. That is why this lives on the HTTP API and has no MCP tool:
+// the tool set is what an agent is handed, the API is what the orchestrator
+// drives, and the drafter is on the record either way.
 func (s *Service) Draft(ctx context.Context, question string, req DraftRequest) (*api.Message, error) {
 	q, err := s.messages.Get(question)
 	if err != nil {
