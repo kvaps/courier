@@ -136,6 +136,9 @@ func TestAHeldQuestionIsPublishedWhenTheReviewerIsSilent(t *testing.T) {
 	q := ask(t, svc, "a", "ship it?")
 
 	eventually(t, "the question to be published", func() bool { return len(be.texts()) == 1 })
+	if !contains(be.texts()[0], "без проверки") {
+		t.Errorf("an unreviewed question is not marked as such: %q", be.texts()[0])
+	}
 	got, err := svc.GetMessage(q.Metadata.Name)
 	if err != nil {
 		t.Fatal(err)

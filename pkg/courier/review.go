@@ -144,6 +144,13 @@ func (s *Service) Publish(ctx context.Context, name string, body *api.Body, by s
 	if m, err = s.messages.UpdateStatus(m); err != nil {
 		return nil, err
 	}
+	if action == "timeout" {
+		// Said on the post itself: the reader has to know this one is raw,
+		// in the agent's words, and nobody checked it before it reached them.
+		shown := *m
+		shown.Spec.Body.Context = strings.TrimSpace("⚠ без проверки оркестратора · " + m.Spec.Body.Context)
+		return s.deliver(ctx, conv, be, &shown, backend.MessageRef{})
+	}
 	return s.deliver(ctx, conv, be, m, backend.MessageRef{})
 }
 
