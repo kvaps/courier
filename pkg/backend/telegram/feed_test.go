@@ -2,9 +2,12 @@ package telegram
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kvaps/courier/pkg/api"
 	"github.com/kvaps/courier/pkg/backend"
 )
 
@@ -228,5 +231,33 @@ func TestAVoicePostShowsWhatItWasHeardAs(t *testing.T) {
 	edits := stub.calledWith("editMessageCaption")
 	if len(edits) != 1 || !strings.Contains(edits[0], "chat_id=-100123") || !strings.Contains(edits[0], "message_id=60") {
 		t.Fatalf("caption edits = %v", edits)
+	}
+}
+
+// An image goes inside the post; the details go as the first comment under it.
+func TestImagesGoInsideThePostAndDetailsUnderIt(t *testing.T) {
+	tg, stub := connected(t, map[string]any{"chat": "-100123"})
+	img := filepath.Join(t.TempDir(), "diagram.png")
+	if err := os.WriteFile(img, []byte("\x89PNG fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tg.feed.sawCopy(1, 9) // the stub numbers every message 1; its copy is 9
+	_, err := tg.Send(context.Background(), "conv:arch", backend.Outgoing{
+		Text: "Which layout?", AwaitReply: true, ThreadTitle: "▣ arch",
+		Body:  api.Body{Question: "Which layout?", Details: "the long reasoning"},
+		Files: []api.Attachment{{Path: img, Name: "diagram.png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if docs := stub.calledWith("sendDocument"); len(docs) != 0 {
+		t.Errorf("the image went as a file: %v", docs)
+	}
+	sends := stub.sent()
+	if len(sends) != 2 {
+		t.Fatalf("sends = %d: %v", len(sends), sends)
+	}
+	if !strings.Contains(sends[1], "the long reasoning") || !strings.Contains(sends[1], `"message_id":9`) {
+		t.Errorf("details = %s", sends[1])
 	}
 }

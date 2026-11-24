@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/kvaps/courier/pkg/api"
 )
 
 // Telegram's own limits for bots. They are enforced here rather than left to
@@ -234,4 +236,116 @@ func guessMediaType(path, fallback string) string {
 		return fallback
 	}
 	return "application/octet-stream"
+}
+
+// isImage reports a file that reads best inside the post rather than as a
+// download: a diagram, a chart, a screenshot.
+func isImage(f api.Attachment) bool {
+	switch strings.ToLower(filepath.Ext(f.Path)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif":
+		return true
+	}
+	return strings.HasPrefix(f.MediaType, "image/")
+}
+
+// sendRichWithImages posts Markdown with images embedded where the text says,
+// or appended after it: each image is uploaded in the same request and
+// referenced from the Markdown as tg://photo?id=imgN.
+func (a *botAPI) sendRichWithImages(ctx context.Context, chatID int64, markdown string, images []api.Attachment,
+	replyTo int, markup string, silent bool,
+) (int, error) {
+	type media struct {
+		ID    string            `json:"id"`
+		Media map[string]string `json:"media"`
+	}
+	var list []media
+	var b strings.Builder
+	b.WriteString(markdown)
+	for i, img := range images {
+		if fi, err := os.Stat(img.Path); err != nil || fi.Size() > maxUploadBytes {
+			return 0, fmt.Errorf("image %s cannot be uploaded", img.Path)
+		}
+		id := fmt.Sprintf("img%d", i+1)
+		name := img.Name
+		if name == "" {
+			name = filepath.Base(img.Path)
+		}
+		fmt.Fprintf(&b, "\n\n![%s](tg://photo?id=%s)", strings.NewReplacer("[", "(", "]", ")").Replace(name), id)
+		list = append(list, media{ID: id, Media: map[string]string{"type": "photo", "media": "attach://f" + strconv.Itoa(i+1)}})
+	}
+	rich, err := json.Marshal(map[string]any{"markdown": b.String(), "media": list})
+	if err != nil {
+		return 0, err
+	}
+	fields := map[string]string{"chat_id": strconv.FormatInt(chatID, 10), "rich_message": string(rich)}
+	if silent {
+		fields["disable_notification"] = "true"
+	}
+	if replyTo > 0 {
+		fields["reply_parameters"] = fmt.Sprintf(`{"message_id":%d,"allow_sending_without_reply":true}`, replyTo)
+	}
+	if markup != "" {
+		fields["reply_markup"] = markup
+	}
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		var werr error
+		defer func() { _ = pw.CloseWithError(werr) }()
+		for k, v := range fields {
+			if werr = mw.WriteField(k, v); werr != nil {
+				return
+			}
+		}
+		for i, img := range images {
+			f, oerr := os.Open(img.Path) //nolint:gosec // validated by the caller
+			if oerr != nil {
+				werr = oerr
+				return
+			}
+			part, cerr := mw.CreateFormFile("f"+strconv.Itoa(i+1), filepath.Base(img.Path))
+			if cerr != nil {
+				_ = f.Close()
+				werr = cerr
+				return
+			}
+			_, werr = io.Copy(part, f)
+			_ = f.Close()
+			if werr != nil {
+				return
+			}
+		}
+		werr = mw.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.base+"/bot"+a.token+"/sendRichMessage", pr)
+	if err != nil {
+		return 0, a.scrubErr(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return 0, a.scrubErr(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, a.scrubErr(err)
+	}
+	var env struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		ErrorCode   int    `json:"error_code"`
+		Result      struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return 0, fmt.Errorf("sendRichMessage: parse reply (http %d): %w", resp.StatusCode, a.scrubErr(err))
+	}
+	if !env.OK {
+		return 0, &apiError{Code: env.ErrorCode, Description: a.scrub(env.Description)}
+	}
+	return env.Result.MessageID, nil
 }

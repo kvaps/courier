@@ -247,6 +247,17 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		return backend.MessageRef{}, api.NewInvalid("buttons need a message to sit under: this one has no text")
 	}
 
+	// Images go inside the message, where the reader looks at them with the
+	// words; everything else goes as files under it.
+	var images, docs []api.Attachment
+	for _, f := range out.Files {
+		if isImage(f) {
+			images = append(images, f)
+		} else {
+			docs = append(docs, f)
+		}
+	}
+
 	key := feedKey(ref, out.Conversation)
 	// Where does it go?
 	under := 0 // the post to comment under; 0 means a new post
@@ -270,7 +281,7 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		// A question is the one thing worth a sound; everything else waits to
 		// be looked at.
 		b.sending.Add(1)
-		id, err := b.sendText(ctx, channel, withHeader(header, text), 0, markup, !out.AwaitReply)
+		id, embedded, err := b.sendWithImages(ctx, channel, withHeader(header, text), images, 0, markup, !out.AwaitReply)
 		if err != nil {
 			b.sending.Add(-1)
 			return backend.MessageRef{}, err
@@ -280,10 +291,14 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		first = postRef(ref, id)
 		under = id
 		text = ""
+		if embedded {
+			images = nil
+		}
 	}
 
+	details := strings.TrimSpace(out.Body.Details)
 	copyID := 0
-	if text != "" || len(out.Files) > 0 {
+	if text != "" || details != "" || len(images) > 0 || len(docs) > 0 {
 		c, ok := b.feed.copyOf(ctx, under)
 		if !ok {
 			return first, api.NewBackendError(
@@ -296,15 +311,25 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		b.feed.touch(under) // a new comment is new activity under the post
 	}
 	if text != "" {
-		id, err := b.sendText(ctx, group, text, copyID, markup, true)
+		id, embedded, err := b.sendWithImages(ctx, group, text, images, copyID, markup, true)
 		if err != nil {
 			return first, err
+		}
+		if embedded {
+			images = nil
 		}
 		if first.Zero() {
 			first = commentRef(ref, id)
 		}
 	}
-	for _, f := range out.Files {
+	// The reasoning behind a question, its alternatives and sources: the first
+	// comment under it, so the post itself stays what is needed to decide.
+	if details != "" {
+		if _, err := b.sendText(ctx, group, "Подробнее\n\n"+details, copyID, "", true); err != nil {
+			b.logger().Warn("could not add the details under a post", "err", err)
+		}
+	}
+	for _, f := range append(images, docs...) {
 		name := f.Name
 		if name == "" {
 			name = filepath.Base(f.Path)
@@ -318,6 +343,23 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		}
 	}
 	return first, nil
+}
+
+// sendWithImages sends text with the images inside it when it can, reporting
+// whether they were embedded; when the rich send is refused, the text goes on
+// its own and the images are left for the caller to send as files.
+func (b *Backend) sendWithImages(ctx context.Context, chatID int64, text string, images []api.Attachment,
+	replyTo int, markup string, silent bool,
+) (int, bool, error) {
+	if len(images) > 0 {
+		id, err := b.api.sendRichWithImages(ctx, chatID, text, images, replyTo, markup, silent)
+		if err == nil {
+			return id, true, nil
+		}
+		b.logger().Info("images could not go inside the message; sending them as files", "err", err)
+	}
+	id, err := b.sendText(ctx, chatID, text, replyTo, markup, silent)
+	return id, false, err
 }
 
 // sendText posts one text message, honouring a flood wait once. Telegram says

@@ -121,7 +121,14 @@ func (f *feed) addPost(id int, thread, header string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := time.Now().UTC()
-	f.st.Posts[id] = &feedPost{Thread: thread, Header: header, At: now, Created: now}
+	post := &feedPost{Thread: thread, Header: header, At: now, Created: now}
+	// The group's copy can arrive before the post is recorded.
+	for copyID, of := range f.st.Copies {
+		if of == id {
+			post.Copy = copyID
+		}
+	}
+	f.st.Posts[id] = post
 	f.st.Last[thread] = id
 	f.save()
 	f.copied.Broadcast()

@@ -13,16 +13,17 @@ import (
 // per-field descriptions are the actual guidance an agent gets, so they say what
 // each field is for rather than what type it is.
 type bodyInput struct {
-	Context  string `json:"context,omitempty" jsonschema:"one line that re-orients the reader: which PR, doc or thread, who is involved, what is on the table. They have not seen this in a week and are juggling other agents"`
-	Question string `json:"question,omitempty" jsonschema:"the choice itself, as a plain either/or a person would say out loud. No undefined jargon; if a term is unavoidable, gloss it in two or three words"`
+	Context  string `json:"context,omitempty" jsonschema:"one sentence saying WHAT this thing is in plain words (not a list of PR numbers or ids) and why it is in front of the reader now. They have not seen this in a week and are juggling other agents"`
+	Question string `json:"question,omitempty" jsonschema:"the decision, shaped for the thinking it needs — Markdown is rendered: a table to compare options, a before/after code block for a change to config, code or permissions, a numbered block per decision when there are several. No undefined jargon; gloss any unavoidable term in two or three words. End by saying how to answer in one word"`
 	Proposal string `json:"proposal,omitempty" jsonschema:"the answer YOU recommend, so they can reply with one word. Never leave this empty on a question"`
-	Text     string `json:"text,omitempty" jsonschema:"free-form content, for anything that is not a decision — a note, a heads-up, a result"`
+	Text     string `json:"text,omitempty" jsonschema:"free-form content, for anything that is not a decision — a note, a heads-up, a result. Markdown is rendered"`
+	Details  string `json:"details,omitempty" jsonschema:"the reasoning, alternatives and sources behind the question — shown as the first comment under the post, so the post itself stays short. Put the long part here, not in question"`
 	Index    int    `json:"progress_index,omitempty" jsonschema:"position in a batch, e.g. 3 of 12, so a long run is visibly finite"`
 	Total    int    `json:"progress_total,omitempty" jsonschema:"how many items the batch has in total"`
 }
 
 func (b bodyInput) body() api.Body {
-	out := api.Body{Context: b.Context, Question: b.Question, Proposal: b.Proposal, Text: b.Text}
+	out := api.Body{Context: b.Context, Question: b.Question, Proposal: b.Proposal, Text: b.Text, Details: b.Details}
 	if b.Total > 0 {
 		out.Progress = &api.Progress{Index: b.Index, Total: b.Total}
 	}
@@ -111,7 +112,7 @@ func attachments(paths []string) []api.Attachment {
 type askInput struct {
 	Conversation string `json:"conversation" jsonschema:"the conversation to ask in"`
 	bodyInput
-	Files       []string `json:"files,omitempty" jsonschema:"absolute paths of files to attach to the question — a screenshot or a diff is often what makes a decision answerable at a glance"`
+	Files       []string `json:"files,omitempty" jsonschema:"absolute paths of files to attach to the question. Images (png, jpg) are shown INSIDE the post: a diagram rendered with d2 or graphviz for architecture or dependencies, a screenshot for UI, two images joined side by side (magick) for before/after. Other files go under the post"`
 	WaitSeconds int      `json:"wait_seconds,omitempty" jsonschema:"how long to wait for the answer before returning the question still open; defaults to 300, capped at 1800"`
 }
 

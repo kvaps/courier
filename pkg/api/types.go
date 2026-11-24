@@ -346,6 +346,10 @@ type Body struct {
 	// Text is free-form content, used on its own for anything that is not a
 	// decision, and for the human's words on an inbound message.
 	Text string `json:"text,omitempty"`
+	// Details is what the reader may want after the decision is clear — the
+	// reasoning, the alternatives, the sources. A transport shows it apart
+	// from the message, so the message stays what is needed to decide.
+	Details string `json:"details,omitempty"`
 	// Spoken marks Text as a machine transcription of a voice message rather
 	// than something the person typed. The words are theirs and the answer is
 	// real; how it was captured is not a detail, though — speech recognition
