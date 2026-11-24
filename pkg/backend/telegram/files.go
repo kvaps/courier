@@ -260,7 +260,7 @@ func (a *botAPI) sendRichWithImages(ctx context.Context, chatID int64, markdown 
 	}
 	var list []media
 	var b strings.Builder
-	b.WriteString(markdown)
+	b.WriteString(tidyMarkdown(markdown))
 	for i, img := range images {
 		if fi, err := os.Stat(img.Path); err != nil || fi.Size() > maxUploadBytes {
 			return 0, fmt.Errorf("image %s cannot be uploaded", img.Path)

@@ -261,3 +261,12 @@ func TestImagesGoInsideThePostAndDetailsUnderIt(t *testing.T) {
 		t.Errorf("details = %s", sends[1])
 	}
 }
+
+// A table written straight under a list item reaches Telegram as a table.
+func TestTidyMarkdownSeparatesTables(t *testing.T) {
+	in := "2. Flag\n| A | B |\n|---|---|\n| 1 | 2 |\n3. Next\n```\n| not | a table |\n```"
+	want := "2. Flag\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n3. Next\n```\n| not | a table |\n```"
+	if got := tidyMarkdown(in); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

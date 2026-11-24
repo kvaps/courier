@@ -376,3 +376,40 @@ func (f *feed) keep(id int) {
 	}
 	f.save()
 }
+
+// tidyMarkdown fixes what agents write that Telegram's Markdown reads wrongly.
+// A table directly under a list item, with no blank line between, is taken as
+// a lazy continuation of the item's paragraph and arrives as a line of pipes;
+// a blank line before and after every table makes it a table again. Lists keep
+// their numbering across the break.
+func tidyMarkdown(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines)+8)
+	inFence := false
+	isRow := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "|") }
+	prevRow := false // the previous line outside a fence was a table row
+	for i, l := range lines {
+		fence := strings.HasPrefix(strings.TrimSpace(l), "```")
+		if inFence {
+			out = append(out, l)
+			if fence {
+				inFence = false
+				prevRow = false
+			}
+			continue
+		}
+		row := !fence && isRow(l)
+		if i > 0 && strings.TrimSpace(lines[i-1]) != "" && strings.TrimSpace(l) != "" && row != prevRow {
+			out = append(out, "")
+		}
+		if row {
+			l = strings.TrimSpace(l)
+		}
+		out = append(out, l)
+		prevRow = row
+		if fence {
+			inFence = true
+		}
+	}
+	return strings.Join(out, "\n")
+}

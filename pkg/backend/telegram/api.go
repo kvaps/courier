@@ -287,7 +287,7 @@ func (a *botAPI) sendMessage(ctx context.Context, chatID int64, threadID int, te
 // bold, lists, tables and code arrive formatted instead of as raw asterisks.
 // A parse failure is the caller's to handle by falling back to plain text.
 func (a *botAPI) sendRichMessage(ctx context.Context, chatID int64, markdown string, replyTo int, markup string, silent bool) (int, error) {
-	rich, err := json.Marshal(map[string]any{"markdown": markdown, "skip_entity_detection": false})
+	rich, err := json.Marshal(map[string]any{"markdown": tidyMarkdown(markdown), "skip_entity_detection": false})
 	if err != nil {
 		return 0, err
 	}
@@ -312,7 +312,7 @@ func (a *botAPI) sendRichMessage(ctx context.Context, chatID int64, markdown str
 
 // editRichText rewrites a message with Markdown content and clears its buttons.
 func (a *botAPI) editRichText(ctx context.Context, chatID int64, messageID int, markdown string) error {
-	rich, err := json.Marshal(map[string]any{"markdown": markdown})
+	rich, err := json.Marshal(map[string]any{"markdown": tidyMarkdown(markdown)})
 	if err != nil {
 		return err
 	}
