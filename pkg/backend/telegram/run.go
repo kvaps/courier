@@ -119,29 +119,51 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	}
 	// The discussion group's copy of a post: the only link between a post and
 	// the replies that will be written under it.
+	var thread string
 	if msg.IsAutomaticForward {
-		if o := msg.ForwardOrigin; o != nil && o.Chat != nil && o.Chat.ID == channel && o.MessageID > 0 {
-			b.feed.sawCopy(o.MessageID, msg.MessageID)
+		o := msg.ForwardOrigin
+		if o == nil || o.Chat == nil || o.Chat.ID != channel || o.MessageID <= 0 {
+			return
 		}
-		return
+		if !b.feed.known(o.MessageID) && b.sending.Load() > 0 {
+			b.feed.waitPost(ctx, o.MessageID, 5*time.Second)
+		}
+		if b.feed.known(o.MessageID) {
+			b.feed.sawCopy(o.MessageID, msg.MessageID)
+			return
+		}
+		// A post courier did not write: the reader starting a conversation of
+		// their own. It goes to the default conversation, and so does every
+		// reply under it.
+		if b.cfg.DefaultConversation == "" {
+			return
+		}
+		thread = "conv:" + b.cfg.DefaultConversation
+		b.feed.addPost(o.MessageID, thread, "")
+		b.feed.sawCopy(o.MessageID, msg.MessageID)
 	}
 	if msg.isService() {
 		return
 	}
-	author, authorID, ok := b.sender(msg, channel, group)
-	if !ok {
-		return
-	}
 
-	root := msg.ThreadID
-	if root == 0 && msg.ReplyTo != nil {
-		root = msg.ReplyTo.MessageID
-	}
-	thread, _, known := b.feed.threadOfCopy(root)
-	if !known {
-		log.Warn("a message outside any post's comments", "message", msg.MessageID, "thread", msg.ThreadID)
-		b.replyIn(ctx, msg.MessageID, "Не понял, к какому посту это. Ответь в комментариях под нужным постом — так ответ попадёт тому агенту, чей это вопрос.")
-		return
+	author, authorID := "admin", "chat:"+strconv.FormatInt(channel, 10)
+	if thread == "" {
+		var ok bool
+		if author, authorID, ok = b.sender(msg, channel, group); !ok {
+			return
+		}
+		root := msg.ThreadID
+		if root == 0 && msg.ReplyTo != nil {
+			root = msg.ReplyTo.MessageID
+		}
+		t, post, known := b.feed.threadOfCopy(root)
+		if !known {
+			log.Warn("a message outside any post's comments", "message", msg.MessageID, "thread", msg.ThreadID)
+			b.replyIn(ctx, msg.MessageID, "Не понял, к какому посту это. Ответь в комментариях под нужным постом — так ответ попадёт тому агенту, чей это вопрос. Чтобы начать новый разговор, напиши пост в канал.")
+			return
+		}
+		thread = t
+		b.feed.touch(post)
 	}
 	ref := backend.ThreadRef(thread)
 

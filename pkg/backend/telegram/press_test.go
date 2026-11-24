@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -78,6 +79,21 @@ func (s *botStub) calledWith(method string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls[method]...)
+}
+
+// sent is every text message courier posted, rich or plain, with the form
+// decoded so a test can look for the words and parameters it cares about.
+func (s *botStub) sent() []string {
+	var out []string
+	for _, m := range []string{"sendRichMessage", "sendMessage"} {
+		for _, raw := range s.calledWith(m) {
+			if d, err := url.QueryUnescape(raw); err == nil {
+				raw = d
+			}
+			out = append(out, raw)
+		}
+	}
+	return out
 }
 
 // connected builds a backend wired to the stub and already "connected" to a chat.
@@ -237,11 +253,11 @@ func TestSendWithoutChoicesDrawsNoKeyboard(t *testing.T) {
 	if _, err := tg.Send(context.Background(), "7", backend.Outgoing{Text: "plain question", AwaitReply: true}); err != nil {
 		t.Fatal(err)
 	}
-	sends := stub.calledWith("sendMessage")
+	sends := stub.sent()
 	if len(sends) != 1 {
 		t.Fatalf("sendMessage called %d times", len(sends))
 	}
-	if strings.Contains(sends[0], "reply_markup") || strings.Contains(sends[0], "reply_to_message_id") {
+	if strings.Contains(sends[0], "reply_markup") || strings.Contains(sends[0], "reply_parameters") {
 		t.Errorf("an ordinary question grew a keyboard or a quotation: %s", sends[0])
 	}
 }
@@ -256,12 +272,12 @@ func TestSendWithChoicesDrawsThemUnderTheQuotedQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sends := stub.calledWith("sendMessage")
+	sends := stub.sent()
 	if len(sends) != 1 {
 		t.Fatalf("sendMessage called %d times", len(sends))
 	}
 	// Under the post it answers: a reply to the post's copy in the group.
-	for _, want := range []string{"chat_id=-100456", "reply_markup", "callback_data", "reply_to_message_id=7"} {
+	for _, want := range []string{"chat_id=-100456", "reply_markup", "callback_data", `"message_id":7`} {
 		if !strings.Contains(sends[0], want) {
 			t.Errorf("the drafted answer is missing %q: %s", want, sends[0])
 		}
@@ -304,11 +320,13 @@ func TestEditFallsBackWhenTheEmptyKeyboardIsRefused(t *testing.T) {
 	if err := tg.Edit(context.Background(), backend.MessageRef{Thread: "7", ID: "c42"}, "withdrawn"); err != nil {
 		t.Fatalf("the edit gave up instead of retrying without the keyboard: %v", err)
 	}
-	if len(bodies) != 2 {
-		t.Fatalf("calls = %d, want the attempt and the retry", len(bodies))
+	// The rich edit and the plain edit both ask to clear the keyboard and are
+	// refused; the last attempt goes out without one.
+	if len(bodies) != 3 {
+		t.Fatalf("calls = %d, want the rich attempt, the plain attempt and the retry", len(bodies))
 	}
-	if strings.Contains(bodies[1], "reply_markup") {
-		t.Errorf("the retry still asked for a keyboard: %s", bodies[1])
+	if strings.Contains(bodies[2], "reply_markup") {
+		t.Errorf("the retry still asked for a keyboard: %s", bodies[2])
 	}
 }
 

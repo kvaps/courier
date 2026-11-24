@@ -18,11 +18,11 @@ func TestAQuestionIsANewPost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sends := stub.calledWith("sendMessage")
+	sends := stub.sent()
 	if len(sends) != 1 {
 		t.Fatalf("sendMessage called %d times", len(sends))
 	}
-	for _, want := range []string{"chat_id=-100123", "%E2%96%A3+db-agent"} {
+	for _, want := range []string{"chat_id=-100123", "▣ db-agent"} {
 		if !strings.Contains(sends[0], want) {
 			t.Errorf("the post is missing %q: %s", want, sends[0])
 		}
@@ -46,11 +46,11 @@ func TestANoteGoesUnderTheLatestPost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sends := stub.calledWith("sendMessage")
+	sends := stub.sent()
 	if len(sends) != 1 {
 		t.Fatalf("sendMessage called %d times", len(sends))
 	}
-	for _, want := range []string{"chat_id=-100456", "reply_to_message_id=7", "disable_notification=true"} {
+	for _, want := range []string{"chat_id=-100456", `"message_id":7`, "disable_notification=true"} {
 		if !strings.Contains(sends[0], want) {
 			t.Errorf("the note is missing %q: %s", want, sends[0])
 		}
@@ -67,7 +67,7 @@ func TestANoteWithoutAPostStartsOne(t *testing.T) {
 	if _, err := tg.Send(context.Background(), "conv:new", backend.Outgoing{Text: "found something"}); err != nil {
 		t.Fatal(err)
 	}
-	sends := stub.calledWith("sendMessage")
+	sends := stub.sent()
 	if len(sends) != 1 || !strings.Contains(sends[0], "chat_id=-100123") || !strings.Contains(sends[0], "disable_notification=true") {
 		t.Fatalf("expected one silent post: %v", sends)
 	}
@@ -136,7 +136,7 @@ func TestAMessageOutsideAnyPostIsTurnedBack(t *testing.T) {
 	if got := sink.inbound(); len(got) != 0 {
 		t.Fatalf("delivered somewhere arbitrary: %+v", got)
 	}
-	if sends := stub.calledWith("sendMessage"); len(sends) != 1 || !strings.Contains(sends[0], "reply_to_message_id=15") {
+	if sends := stub.sent(); len(sends) != 1 || !strings.Contains(sends[0], "reply_to_message_id=15") {
 		t.Errorf("the writer was not told: %v", sends)
 	}
 }
@@ -163,5 +163,48 @@ func TestTheFeedSurvivesARestart(t *testing.T) {
 	g := newFeed(dir)
 	if thread, post, ok := g.threadOfCopy(21); !ok || thread != "conv:y" || post != 70 {
 		t.Errorf("after restart: %q %d %v", thread, post, ok)
+	}
+}
+
+// A post the reader writes in the channel is how they start a conversation of
+// their own: it and every reply under it go to the default conversation.
+func TestTheReadersOwnPostGoesToTheDefaultConversation(t *testing.T) {
+	tg, _ := connected(t, map[string]any{"chat": "-100123", "defaultConversation": "orch"})
+	sink := &recordingSink{}
+	tg.handle(context.Background(), sink, tgUpdate{Message: &tgMessage{
+		MessageID: 30, Date: 1, Text: "что по blockstor?", Chat: tgChat{ID: -100456},
+		IsAutomaticForward: true, SenderChat: &tgChat{ID: -100123},
+		ForwardOrigin: &tgOrigin{Type: "channel", Chat: &tgChat{ID: -100123}, MessageID: 60},
+	}})
+	tg.handle(context.Background(), sink, tgUpdate{Message: &tgMessage{
+		MessageID: 31, ThreadID: 30, Date: 2, Text: "и про PR", From: &tgUser{ID: 11}, Chat: tgChat{ID: -100456},
+	}})
+	got := sink.inbound()
+	if len(got) != 2 {
+		t.Fatalf("inbound = %+v", got)
+	}
+	for _, in := range got {
+		if in.Thread != "conv:orch" {
+			t.Errorf("%q went to %q", in.Text, in.Thread)
+		}
+	}
+	// The orchestrator's answer goes under that post, not somewhere new.
+	if post, ok := tg.feed.recentPost("conv:orch"); !ok || post != 60 {
+		t.Errorf("the reply would land under %d %v", post, ok)
+	}
+}
+
+// Without a default conversation the reader's own post is left alone: nobody
+// was configured to hear it, and guessing a recipient is worse than silence.
+func TestWithoutADefaultTheReadersPostIsIgnored(t *testing.T) {
+	tg, _ := connected(t, map[string]any{"chat": "-100123"})
+	sink := &recordingSink{}
+	tg.handle(context.Background(), sink, tgUpdate{Message: &tgMessage{
+		MessageID: 30, Date: 1, Text: "hello", Chat: tgChat{ID: -100456},
+		IsAutomaticForward: true, SenderChat: &tgChat{ID: -100123},
+		ForwardOrigin: &tgOrigin{Type: "channel", Chat: &tgChat{ID: -100123}, MessageID: 60},
+	}})
+	if got := sink.inbound(); len(got) != 0 {
+		t.Fatalf("delivered: %+v", got)
 	}
 }

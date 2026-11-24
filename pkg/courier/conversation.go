@@ -144,11 +144,23 @@ func (s *Service) findByThread(channel string, ref backend.ThreadRef) (*api.Conv
 	}
 	for i := range items {
 		c := items[i]
-		if c.Spec.Channel == channel && c.Status.Ref == string(ref) {
+		// "conv:<name>" names a conversation by its name, whatever the
+		// transport called its thread when it was opened — a transport that
+		// files its bookkeeping by conversation name answers with that.
+		if c.Spec.Channel == channel && (c.Status.Ref == string(ref) || "conv:"+c.Metadata.Name == string(ref)) {
 			return &c, true
 		}
 	}
 	return nil, false
+}
+
+// findByName returns an open conversation on a channel by its name.
+func (s *Service) findByName(channel, name string) (*api.Conversation, bool) {
+	c, err := s.conversations.Get(name)
+	if err != nil || c.Spec.Channel != channel || c.Spec.Closed {
+		return nil, false
+	}
+	return c, true
 }
 
 // touchConversation records activity on a conversation.

@@ -114,6 +114,64 @@ func (f *feed) addPost(id int, thread, header string) {
 	f.st.Posts[id] = &feedPost{Thread: thread, Header: header, At: time.Now().UTC()}
 	f.st.Last[thread] = id
 	f.save()
+	f.copied.Broadcast()
+}
+
+// known reports whether a post is one courier recorded.
+func (f *feed) known(post int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.st.Posts[post]
+	return ok
+}
+
+// waitPost waits a little for a post to be recorded. A post courier is
+// sending right now may have its copy arrive before Send returns and records
+// it; without the wait, that copy would look like a post someone else wrote.
+func (f *feed) waitPost(ctx context.Context, post int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	timer := time.AfterFunc(d, func() {
+		f.mu.Lock()
+		f.copied.Broadcast()
+		f.mu.Unlock()
+	})
+	defer timer.Stop()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for {
+		if _, ok := f.st.Posts[post]; ok {
+			return true
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return false
+		}
+		f.copied.Wait()
+	}
+}
+
+// touch makes a post the conversation's current one, so what the agent says
+// next lands under the post the reader just wrote in rather than its newest.
+func (f *feed) touch(post int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.st.Posts[post]
+	if !ok {
+		return
+	}
+	p.At = time.Now().UTC()
+	f.st.Last[p.Thread] = post
+	f.save()
+}
+
+// feedKey is what a conversation's posts are filed under: its name when the
+// daemon supplies one, so a post the reader started and a post the agent
+// started belong to the same conversation regardless of how its thread was
+// first opened.
+func feedKey(ref backend.ThreadRef, conversation string) string {
+	if conversation != "" {
+		return "conv:" + conversation
+	}
+	return string(ref)
 }
 
 // sawCopy records the discussion group's copy of a post and wakes whoever is

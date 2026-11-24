@@ -77,13 +77,14 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 			s.choicePrompt(conv.Spec.Channel))
 	}
 	ref, err := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-		ThreadTitle: conv.Spec.Title,
-		Text:        text,
-		Body:        created.Spec.Body,
-		AwaitReply:  created.Spec.AwaitReply,
-		Choices:     created.Spec.Choices,
-		ReplyTo:     quoted,
-		Files:       created.Spec.Attachments,
+		ThreadTitle:  conv.Spec.Title,
+		Conversation: conv.Metadata.Name,
+		Text:         text,
+		Body:         created.Spec.Body,
+		AwaitReply:   created.Spec.AwaitReply,
+		Choices:      created.Spec.Choices,
+		ReplyTo:      quoted,
+		Files:        created.Spec.Attachments,
 	})
 	if err != nil {
 		created.Status.Phase = api.PhaseFailed
@@ -171,8 +172,9 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 		struck := "— " + note + " (no answer needed)\n\n" + m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false)
 		if eerr := be.Edit(ctx, ref, struck); eerr != nil {
 			if _, serr := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-				ThreadTitle: conv.Spec.Title,
-				Text:        "— " + note + ": the question above no longer needs an answer",
+				ThreadTitle:  conv.Spec.Title,
+				Conversation: conv.Metadata.Name,
+				Text:         "— " + note + ": the question above no longer needs an answer",
 			}); serr != nil {
 				s.log.Warn("could not tell the reader a question was withdrawn",
 					"message", name, "edit_err", eerr, "send_err", serr)
@@ -239,6 +241,9 @@ func (s *Service) openQuestion(c *api.Conversation) (*api.Message, bool) {
 // goroutine, after the message is safely in the store.
 func (s *Service) Receive(ctx context.Context, channel string, in backend.Inbound) {
 	conv, ok := s.findByThread(channel, in.Thread)
+	if in.Conversation != "" {
+		conv, ok = s.findByName(channel, in.Conversation)
+	}
 	if !ok {
 		// Not an error: a thread nobody bound to a conversation. Logged rather
 		// than delivered somewhere arbitrary, because a message put in front of
@@ -359,8 +364,9 @@ func (s *Service) push(conv *api.Conversation, stored *api.Message, in backend.I
 	// Tell the person. A message the agent never got must not look delivered.
 	if be, berr := s.backendFor(conv.Spec.Channel); berr == nil {
 		if _, serr := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-			ThreadTitle: conv.Spec.Title,
-			Text:        "⚠ not delivered to the agent — " + err.Error() + "\n\nIt is recorded as " + stored.Metadata.Name + " and can be re-sent.",
+			ThreadTitle:  conv.Spec.Title,
+			Conversation: conv.Metadata.Name,
+			Text:         "⚠ not delivered to the agent — " + err.Error() + "\n\nIt is recorded as " + stored.Metadata.Name + " and can be re-sent.",
 		}); serr != nil {
 			s.log.Warn("could not report a failed agent delivery", "conversation", conv.Metadata.Name, "err", serr)
 		}

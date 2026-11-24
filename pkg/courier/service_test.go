@@ -751,3 +751,39 @@ func TestDeletingAConversationWithdrawsItsOpenQuestion(t *testing.T) {
 		t.Errorf("phase = %s, want Cancelled", got.Status.Phase)
 	}
 }
+
+// A transport that files its threads by conversation name answers with
+// "conv:<name>", and that reaches the conversation whatever its thread was
+// first called.
+func TestAThreadNamedForTheConversationReachesIt(t *testing.T) {
+	svc, be, _ := newService(t)
+	openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "ship it?")
+
+	be.say(t, backend.ThreadRef("conv:a"), "yes")
+
+	got, err := svc.GetMessage(q.Metadata.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != api.PhaseAnswered {
+		t.Fatalf("question = %+v", got.Status)
+	}
+}
+
+// An answered question is rewritten where the reader is looking, so it stops
+// looking open.
+func TestAnAnsweredQuestionIsRewritten(t *testing.T) {
+	svc, be, _ := newService(t)
+	c := openConv(t, svc, "a", nil)
+	q := ask(t, svc, "a", "ship it?")
+
+	be.say(t, backend.ThreadRef(c.Status.Ref), "yes")
+
+	be.mu.Lock()
+	edited := be.edits[q.Status.Ref]
+	be.mu.Unlock()
+	if !contains(edited, "answered: yes") || !contains(edited, "ship it?") {
+		t.Errorf("the question now reads %q", edited)
+	}
+}

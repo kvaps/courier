@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kvaps/courier/pkg/api"
@@ -62,6 +63,10 @@ type Config struct {
 	// because the group is private — and a group of two is only ever a group of
 	// two until somebody is added to it.
 	AllowFrom []int64 `json:"allowFrom,omitempty"`
+	// DefaultConversation hears the reader's own posts in the channel — the
+	// way to start a conversation rather than answer one. Typically the
+	// orchestrator's. Unset, such posts are ignored.
+	DefaultConversation string `json:"defaultConversation,omitempty"`
 	// PollTimeout is the getUpdates long-poll timeout in seconds.
 	PollTimeout int `json:"pollTimeout,omitempty"`
 	// Transcribe, when set, turns voice messages into words. Without it a voice
@@ -85,6 +90,9 @@ type Backend struct {
 	hear *transcriber
 
 	feed *feed
+	// sending counts posts in flight, so a copy that arrives before its post
+	// is recorded is waited for rather than mistaken for the reader's own.
+	sending atomic.Int32
 
 	mu      sync.RWMutex
 	chatID  int64 // the channel
@@ -235,6 +243,7 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		return backend.MessageRef{}, api.NewInvalid("buttons need a message to sit under: this one has no text")
 	}
 
+	key := feedKey(ref, out.Conversation)
 	// Where does it go?
 	under := 0 // the post to comment under; 0 means a new post
 	if !out.ReplyTo.Zero() {
@@ -242,7 +251,7 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 			under = n
 		}
 	} else if !out.AwaitReply {
-		if n, ok := b.feed.recentPost(string(ref)); ok {
+		if n, ok := b.feed.recentPost(key); ok {
 			under = n
 		}
 	}
@@ -256,11 +265,14 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 		}
 		// A question is the one thing worth a sound; everything else waits to
 		// be looked at.
+		b.sending.Add(1)
 		id, err := b.sendText(ctx, channel, withHeader(header, text), 0, markup, !out.AwaitReply)
 		if err != nil {
+			b.sending.Add(-1)
 			return backend.MessageRef{}, err
 		}
-		b.feed.addPost(id, string(ref), header)
+		b.feed.addPost(id, key, header)
+		b.sending.Add(-1)
 		first = postRef(ref, id)
 		under = id
 		text = ""
@@ -305,6 +317,15 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 // exactly how long to wait; ignoring it and retrying at once is how a bot earns
 // a longer ban.
 func (b *Backend) sendText(ctx context.Context, chatID int64, text string, replyTo int, markup string, silent bool) (int, error) {
+	// Markdown first: it is what agents write. Refused markup falls back to
+	// plain text — a stray character must cost the formatting, not the message.
+	if msgID, err := b.api.sendRichMessage(ctx, chatID, text, replyTo, markup, silent); err == nil {
+		return msgID, nil
+	} else if !isBadRequest(err) {
+		b.logger().Warn("rich send failed; retrying as plain text", "err", err)
+	} else {
+		b.logger().Info("markdown refused; sending as plain text", "err", err)
+	}
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
 		msgID, err := b.api.sendMessage(ctx, chatID, 0, text, replyTo, markup, silent)
@@ -339,6 +360,9 @@ func (b *Backend) Edit(ctx context.Context, ref backend.MessageRef, text string)
 	if isPost {
 		chatID = channel
 		text = withHeader(b.feed.header(id), text)
+	}
+	if b.api.editRichText(ctx, chatID, id, text) == nil {
+		return nil
 	}
 	if err := b.api.editMessageText(ctx, chatID, id, text); err != nil {
 		if isNotSupported(err) {

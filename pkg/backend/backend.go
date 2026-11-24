@@ -116,6 +116,9 @@ type Outgoing struct {
 	Body api.Body
 	// AwaitReply marks a question, which some transports can present specially.
 	AwaitReply bool
+	// Conversation is the sending conversation's name, a stable key a
+	// transport may file its own bookkeeping under.
+	Conversation string
 	// ThreadTitle is the conversation's title — on Telegram, the header line of
 	// a post, so the reader sees whose problem it is.
 	ThreadTitle string
@@ -138,7 +141,12 @@ type Outgoing struct {
 // Inbound is one message observed from the human side.
 type Inbound struct {
 	Thread ThreadRef
-	Ref    MessageRef
+	// Conversation, when set, names the conversation outright. A backend sets
+	// it when the message belongs to no thread courier made — the reader
+	// starting a conversation of their own — and the channel's configuration
+	// says who hears those.
+	Conversation string
+	Ref          MessageRef
 	// Author is a display name for the log; it is not an identity the daemon
 	// authorises against.
 	Author string

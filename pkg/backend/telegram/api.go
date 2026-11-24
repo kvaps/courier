@@ -283,6 +283,54 @@ func (a *botAPI) sendMessage(ctx context.Context, chatID int64, threadID int, te
 	return sent.MessageID, a.call(ctx, "sendMessage", params, &sent)
 }
 
+// sendRichMessage posts agent text as Markdown, which is what agents write:
+// bold, lists, tables and code arrive formatted instead of as raw asterisks.
+// A parse failure is the caller's to handle by falling back to plain text.
+func (a *botAPI) sendRichMessage(ctx context.Context, chatID int64, markdown string, replyTo int, markup string, silent bool) (int, error) {
+	rich, err := json.Marshal(map[string]any{"markdown": markdown, "skip_entity_detection": false})
+	if err != nil {
+		return 0, err
+	}
+	params := url.Values{
+		"chat_id":      {strconv.FormatInt(chatID, 10)},
+		"rich_message": {string(rich)},
+	}
+	if silent {
+		params.Set("disable_notification", "true")
+	}
+	if replyTo > 0 {
+		params.Set("reply_parameters", fmt.Sprintf(`{"message_id":%d,"allow_sending_without_reply":true}`, replyTo))
+	}
+	if markup != "" {
+		params.Set("reply_markup", markup)
+	}
+	var sent struct {
+		MessageID int `json:"message_id"`
+	}
+	return sent.MessageID, a.call(ctx, "sendRichMessage", params, &sent)
+}
+
+// editRichText rewrites a message with Markdown content and clears its buttons.
+func (a *botAPI) editRichText(ctx context.Context, chatID int64, messageID int, markdown string) error {
+	rich, err := json.Marshal(map[string]any{"markdown": markdown})
+	if err != nil {
+		return err
+	}
+	return a.call(ctx, "editMessageText", url.Values{
+		"chat_id":      {strconv.FormatInt(chatID, 10)},
+		"message_id":   {strconv.Itoa(messageID)},
+		"rich_message": {string(rich)},
+		"reply_markup": {`{"inline_keyboard":[]}`},
+	}, nil)
+}
+
+// isBadRequest reports a 400: the content was refused, as opposed to the
+// transport failing or asking to wait.
+func isBadRequest(err error) bool {
+	var ae *apiError
+	return errors.As(err, &ae) && ae.Code == 400
+}
+
 // editMessageText rewrites a message and, with it, always clears any buttons.
 //
 // Clearing is not a separate decision: every edit courier makes is a message

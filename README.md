@@ -62,7 +62,9 @@ The chat is a **channel with a discussion group linked** (channel settings → E
 - **A note that is not a question** goes as a silent comment under the agent's latest post while that post is under 12 hours old, and as a silent post of its own otherwise.
 - **A drafted answer** goes as a comment under the question's post, with its buttons.
 - **An answered or withdrawn question is rewritten in place**, so the feed shows at a glance what is still open.
-- A comment written outside any post's thread is not delivered anywhere; the bot replies asking you to write under the post.
+- **A post you write in the channel yourself** — text, voice or a forward — starts a conversation of your own. It goes to the channel's `defaultConversation` (typically the orchestrator's), and so does every reply under it; the agent's answer lands in that post's comments. Without `defaultConversation` such posts are ignored.
+- **Text is sent as Markdown** (Bot API rich messages), so the bold, lists, tables and code agents write arrive formatted. If Telegram refuses the markup, the same text goes out plain: a stray character costs the formatting, never the message.
+- A comment written outside any post's thread is not delivered anywhere; the bot replies asking you to write under the post, or to start a post in the channel.
 - Commenting as an anonymous administrator works: Telegram reports such a message as written by the group, which only an administrator can do.
 
 Telegram links a post to its comments only through the discussion group's automatic copy of the post; courier keeps that map in its state directory (`feed.json`) so it survives a restart.
