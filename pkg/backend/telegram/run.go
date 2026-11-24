@@ -120,6 +120,7 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	// The discussion group's copy of a post: the only link between a post and
 	// the replies that will be written under it.
 	var thread string
+	ownPost := 0 // the reader's own channel post this copy is of, if it is one
 	if msg.IsAutomaticForward {
 		o := msg.ForwardOrigin
 		if o == nil || o.Chat == nil || o.Chat.ID != channel || o.MessageID <= 0 {
@@ -139,6 +140,7 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 			return
 		}
 		thread = "conv:" + b.cfg.DefaultConversation
+		ownPost = o.MessageID
 		b.feed.addPost(o.MessageID, thread, "")
 		b.feed.sawCopy(o.MessageID, msg.MessageID)
 	}
@@ -180,6 +182,9 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 			return // the person has been told; there are no words to carry
 		}
 		text, spoken = heard, true
+		if ownPost > 0 {
+			b.showHeard(ctx, ownPost, heard)
+		}
 	}
 	if text == "" && len(files) == 0 {
 		return // a sticker, or something with no content to carry
@@ -256,6 +261,23 @@ func (b *Backend) listen(ctx context.Context, msg *tgMessage) (string, bool) {
 	log.Info("transcribed a voice message", "message", msg.MessageID, "status", res.Status,
 		"took", time.Since(started).Round(time.Millisecond))
 	return strings.TrimSpace(res.Text), true
+}
+
+// captionMax is Telegram's cap on a media caption.
+const captionMax = 1024
+
+// showHeard puts what a voice post was heard as under the voice itself, so the
+// reader sees — in the feed, without opening anything — the words the agent
+// was actually given. Best-effort: the words have already gone on.
+func (b *Backend) showHeard(ctx context.Context, post int, heard string) {
+	caption := "🎤 " + heard
+	if r := []rune(caption); len(r) > captionMax {
+		caption = string(r[:captionMax-1]) + "…"
+	}
+	channel, _ := b.chats()
+	if err := b.api.editMessageCaption(ctx, channel, post, caption); err != nil {
+		b.logger().Warn("could not show a voice post's words under it", "post", post, "err", err)
+	}
 }
 
 // replyIn answers a message where the person is looking — a reply to it, so it

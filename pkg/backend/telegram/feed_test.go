@@ -208,3 +208,25 @@ func TestWithoutADefaultTheReadersPostIsIgnored(t *testing.T) {
 		t.Fatalf("delivered: %+v", got)
 	}
 }
+
+// A voice post the reader writes in the channel gets the words it was heard
+// as under it, so the feed shows what the agent was actually given.
+func TestAVoicePostShowsWhatItWasHeardAs(t *testing.T) {
+	tg, stub := connected(t, map[string]any{"chat": "-100123", "defaultConversation": "orch"})
+	tg.hear, _ = transcribeStub(t, func(heardIn) (heardOut, error) {
+		return heardOut{Status: transcribedOK, Text: "что по blockstor"}, nil
+	})
+	sink := &recordingSink{}
+	tg.handle(context.Background(), sink, tgUpdate{Message: &tgMessage{
+		MessageID: 30, Date: 1, Chat: tgChat{ID: -100456}, Voice: &tgFile{FileID: "v"},
+		IsAutomaticForward: true, SenderChat: &tgChat{ID: -100123},
+		ForwardOrigin: &tgOrigin{Type: "channel", Chat: &tgChat{ID: -100123}, MessageID: 60},
+	}})
+	if got := sink.inbound(); len(got) != 1 || got[0].Text != "что по blockstor" || !got[0].Spoken {
+		t.Fatalf("inbound = %+v", got)
+	}
+	edits := stub.calledWith("editMessageCaption")
+	if len(edits) != 1 || !strings.Contains(edits[0], "chat_id=-100123") || !strings.Contains(edits[0], "message_id=60") {
+		t.Fatalf("caption edits = %v", edits)
+	}
+}

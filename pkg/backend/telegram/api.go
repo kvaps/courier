@@ -324,6 +324,16 @@ func (a *botAPI) editRichText(ctx context.Context, chatID int64, messageID int, 
 	}, nil)
 }
 
+// editMessageCaption sets the caption of a media message — how a voice post
+// shows the words it was heard as.
+func (a *botAPI) editMessageCaption(ctx context.Context, chatID int64, messageID int, caption string) error {
+	return a.call(ctx, "editMessageCaption", url.Values{
+		"chat_id":    {strconv.FormatInt(chatID, 10)},
+		"message_id": {strconv.Itoa(messageID)},
+		"caption":    {caption},
+	}, nil)
+}
+
 // isBadRequest reports a 400: the content was refused, as opposed to the
 // transport failing or asking to wait.
 func isBadRequest(err error) bool {
