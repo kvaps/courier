@@ -122,7 +122,9 @@ type ChannelStatus struct {
 	ObservedAt  *time.Time `json:"observedAt,omitempty"`
 }
 
-// Conversation is one thread with a human — on Telegram, a forum topic.
+// Conversation is an agent's address with a human. On Telegram it has no
+// place of its own: each question is a channel post, and the replies under a
+// post come back to the conversation that sent it.
 //
 // It exists so that several agents asking about unrelated things do not
 // interleave into one stream the reader has to demultiplex by hand.
@@ -137,7 +139,7 @@ type Conversation struct {
 type ConversationSpec struct {
 	// Channel is the name of the Channel this thread lives on.
 	Channel string `json:"channel"`
-	// Title names the thread for the reader; on Telegram it is the topic title.
+	// Title names the agent for the reader; on Telegram it heads each post.
 	Title string `json:"title"`
 	// Subject is an optional one-line description of what this thread is about.
 	Subject string `json:"subject,omitempty"`
@@ -162,7 +164,7 @@ type AgentRef struct {
 // ConversationStatus is what the daemon observed.
 type ConversationStatus struct {
 	Phase Phase `json:"phase,omitempty"`
-	// Ref is the backend's own identifier for the thread (a topic id).
+	// Ref is the backend's own identifier for the thread.
 	Ref            string     `json:"ref,omitempty"`
 	Message        string     `json:"message,omitempty"`
 	OpenedAt       *time.Time `json:"openedAt,omitempty"`

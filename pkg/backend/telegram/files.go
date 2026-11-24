@@ -41,12 +41,13 @@ type tgPhotoSize struct {
 	FileSize int64  `json:"file_size"`
 }
 
-// sendDocument uploads a file into a thread.
+// sendDocument uploads a file as a reply to replyTo — in a discussion group,
+// replying to a post's copy is what puts the file in that post's comments.
 //
 // Everything goes as a document, including images. A photo sent as a photo is
 // re-encoded and downscaled by Telegram, which is precisely wrong for the thing
 // an agent most often sends — a screenshot someone needs to read text off.
-func (a *botAPI) sendDocument(ctx context.Context, chatID int64, threadID int, path, name, caption string) (int, error) {
+func (a *botAPI) sendDocument(ctx context.Context, chatID int64, replyTo int, path, name, caption string) (int, error) {
 	f, err := os.Open(path) //nolint:gosec // the path is validated by the caller
 	if err != nil {
 		return 0, err
@@ -67,9 +68,10 @@ func (a *botAPI) sendDocument(ctx context.Context, chatID int64, threadID int, p
 		var werr error
 		defer func() { _ = pw.CloseWithError(werr) }()
 
-		fields := map[string]string{"chat_id": strconv.FormatInt(chatID, 10)}
-		if threadID > 0 {
-			fields["message_thread_id"] = strconv.Itoa(threadID)
+		fields := map[string]string{"chat_id": strconv.FormatInt(chatID, 10), "disable_notification": "true"}
+		if replyTo > 0 {
+			fields["reply_to_message_id"] = strconv.Itoa(replyTo)
+			fields["allow_sending_without_reply"] = "true"
 		}
 		if caption != "" {
 			fields["caption"] = caption

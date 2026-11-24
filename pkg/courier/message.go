@@ -77,12 +77,13 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 			s.choicePrompt(conv.Spec.Channel))
 	}
 	ref, err := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-		Text:       text,
-		Body:       created.Spec.Body,
-		AwaitReply: created.Spec.AwaitReply,
-		Choices:    created.Spec.Choices,
-		ReplyTo:    quoted,
-		Files:      created.Spec.Attachments,
+		ThreadTitle: conv.Spec.Title,
+		Text:        text,
+		Body:        created.Spec.Body,
+		AwaitReply:  created.Spec.AwaitReply,
+		Choices:     created.Spec.Choices,
+		ReplyTo:     quoted,
+		Files:       created.Spec.Attachments,
 	})
 	if err != nil {
 		created.Status.Phase = api.PhaseFailed
@@ -170,7 +171,8 @@ func (s *Service) Cancel(ctx context.Context, name, reason string) (*api.Message
 		struck := "— " + note + " (no answer needed)\n\n" + m.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), false)
 		if eerr := be.Edit(ctx, ref, struck); eerr != nil {
 			if _, serr := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-				Text: "— " + note + ": the question above no longer needs an answer",
+				ThreadTitle: conv.Spec.Title,
+				Text:        "— " + note + ": the question above no longer needs an answer",
 			}); serr != nil {
 				s.log.Warn("could not tell the reader a question was withdrawn",
 					"message", name, "edit_err", eerr, "send_err", serr)
@@ -321,6 +323,9 @@ func (s *Service) recordAnswer(ctx context.Context, conv *api.Conversation, in b
 	// between the two is refused on the question's own state, which is already
 	// settled — the edit is what the reader sees, not what makes it true.
 	s.retireDrafts(ctx, conv, q.Metadata.Name, "answered in the reader's own words")
+	// The question itself changes too. In a feed of posts, a question left
+	// looking open after it was answered is one the reader goes back to.
+	s.editMessage(ctx, conv, q, answeredText(q.Spec.Body, in.Text))
 	return q.Metadata.Name
 }
 
@@ -354,7 +359,8 @@ func (s *Service) push(conv *api.Conversation, stored *api.Message, in backend.I
 	// Tell the person. A message the agent never got must not look delivered.
 	if be, berr := s.backendFor(conv.Spec.Channel); berr == nil {
 		if _, serr := be.Send(ctx, backend.ThreadRef(conv.Status.Ref), backend.Outgoing{
-			Text: "⚠ not delivered to the agent — " + err.Error() + "\n\nIt is recorded as " + stored.Metadata.Name + " and can be re-sent.",
+			ThreadTitle: conv.Spec.Title,
+			Text:        "⚠ not delivered to the agent — " + err.Error() + "\n\nIt is recorded as " + stored.Metadata.Name + " and can be re-sent.",
 		}); serr != nil {
 			s.log.Warn("could not report a failed agent delivery", "conversation", conv.Metadata.Name, "err", serr)
 		}
@@ -440,4 +446,14 @@ func (s *Service) mark(ctx context.Context, conv *api.Conversation, ref backend.
 	if err := be.React(ctx, ref, m); err != nil && api.ReasonOf(err) != api.ReasonNotSupported {
 		s.log.Debug("could not set a reaction", "conversation", conv.Metadata.Name, "err", err)
 	}
+}
+
+// answeredText is a question as it reads once answered: the question, then the
+// answer it got, short enough to take in at a glance.
+func answeredText(b api.Body, answer string) string {
+	a := strings.TrimSpace(answer)
+	if r := []rune(a); len(r) > 300 {
+		a = string(r[:299]) + "…"
+	}
+	return "✓ answered: " + a + "\n\n" + b.Render("", false)
 }

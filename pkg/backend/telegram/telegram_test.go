@@ -146,15 +146,17 @@ func TestScrubRemovesBothHalves(t *testing.T) {
 	}
 }
 
-func TestThreadID(t *testing.T) {
-	if id, err := threadID(""); err != nil || id != 0 {
-		t.Errorf("an empty ref is the one implicit thread: %d, %v", id, err)
+func TestParseRef(t *testing.T) {
+	if post, n, err := parseRef("p17"); err != nil || !post || n != 17 {
+		t.Errorf("p17 = %v %d %v", post, n, err)
 	}
-	if id, err := threadID("17"); err != nil || id != 17 {
-		t.Errorf("threadID = %d, %v", id, err)
+	if post, n, err := parseRef("c5"); err != nil || post || n != 5 {
+		t.Errorf("c5 = %v %d %v", post, n, err)
 	}
-	if _, err := threadID("General"); err == nil {
-		t.Error("a non-numeric thread ref was accepted")
+	for _, bad := range []string{"", "17", "x1", "p", "pabc"} {
+		if _, _, err := parseRef(bad); err == nil {
+			t.Errorf("%q was accepted as a feed reference", bad)
+		}
 	}
 }
 

@@ -1,13 +1,14 @@
-// Package telegram is courier's Telegram backend: one forum topic per
-// conversation, in a supergroup the bot administers.
+// Package telegram is courier's Telegram backend: a channel where each
+// question is a post, and the channel's discussion group where the replies to
+// each post live as its comments. See feed.go.
 //
 // Two facts about Telegram shape everything here. Only one process may
 // long-poll getUpdates for a given bot token — a second one gets 409 Conflict
 // and the two then split inbound messages arbitrarily — so the daemon says so
 // plainly rather than looking like an outage. And a bot with privacy mode on
 // sees only messages addressed to it, unless it is an administrator of the
-// group, which is why administrator rights are a requirement and not a
-// convenience.
+// group, which is why administrator rights in the discussion group are a
+// requirement and not a convenience.
 package telegram
 
 import (
@@ -17,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +37,9 @@ func init() { backend.Register(Kind, newBackend) }
 // would be readable through the API and written to the store as plain text, so
 // one is refused outright rather than accepted and redacted later.
 type Config struct {
-	// Chat is the destination: a numeric id ("-1001234567890"), a public
-	// "@username", or a t.me link to either.
+	// Chat is the channel: a numeric id ("-1001234567890"), a public
+	// "@username", or a t.me link to either. It must have a discussion group
+	// linked, and the bot must administer both.
 	Chat string `json:"chat"`
 	// TokenFile is a KEY=VALUE file holding the bot token. Defaults to
 	// ~/.claude/channels/telegram/.env, the file the Claude Code Telegram
@@ -83,11 +84,13 @@ type Backend struct {
 
 	hear *transcriber
 
-	mu     sync.RWMutex
-	chatID int64
-	title  string
-	forum  bool
-	allow  map[int64]bool
+	feed *feed
+
+	mu      sync.RWMutex
+	chatID  int64 // the channel
+	groupID int64 // its discussion group
+	title   string
+	allow   map[int64]bool
 }
 
 func newBackend(env backend.Env, raw json.RawMessage) (backend.Backend, error) {
@@ -145,6 +148,7 @@ func newBackend(env backend.Env, raw json.RawMessage) (backend.Backend, error) {
 		// cancelled client-side just before Telegram was about to answer it.
 		api:   newBotAPI(token, time.Duration(cfg.PollTimeout+30)*time.Second),
 		allow: allow,
+		feed:  newFeed(env.StateDir),
 	}, nil
 }
 
@@ -157,7 +161,7 @@ func (b *Backend) ReplyPrompt() string { return b.cfg.ReplyPrompt }
 // ChoicePrompt is the channel's configured closing line for a drafted answer.
 func (b *Backend) ChoicePrompt() string { return b.cfg.ChoicePrompt }
 
-// Connect authenticates and resolves the destination chat.
+// Connect authenticates and resolves the channel and its discussion group.
 func (b *Backend) Connect(ctx context.Context) (backend.Identity, error) {
 	me, err := b.api.getMe(ctx)
 	if err != nil {
@@ -171,131 +175,128 @@ func (b *Backend) Connect(ctx context.Context) (backend.Identity, error) {
 	if err != nil {
 		return backend.Identity{}, api.NewBackendError("telegram getChat %s: %v", ref, err)
 	}
+	if chat.Type != "channel" {
+		return backend.Identity{}, api.NewInvalid(
+			"telegram chat %s is a %s, not a channel: courier posts one question per channel post "+
+				"and reads the replies in the channel's discussion group", ref, chat.Type)
+	}
+	if chat.LinkedChatID == 0 {
+		return backend.Identity{}, api.NewInvalid(
+			"telegram channel %s has no discussion group: link one in the channel's settings "+
+				"(Edit → Discussion) and make the bot an administrator there", ref)
+	}
 
 	b.mu.Lock()
-	b.chatID, b.title, b.forum = chat.ID, chat.Title, chat.IsForum
+	b.chatID, b.groupID, b.title = chat.ID, chat.LinkedChatID, chat.Title
 	b.mu.Unlock()
 
 	target := chat.Title
 	if target == "" {
 		target = ref
 	}
-	if !chat.IsForum {
-		// Not fatal: every conversation then shares the one stream. Worth
-		// saying out loud, because the per-agent separation silently vanishes.
-		target += " (topics are off — every conversation shares one thread)"
-	}
 	return backend.Identity{Self: me.label(), Target: target}, nil
 }
 
-// OpenThread creates a forum topic for a conversation. In a group without
-// topics it returns the channel's own thread, so conversations still work —
-// they just share one stream.
-func (b *Backend) OpenThread(ctx context.Context, t backend.ThreadSpec) (backend.ThreadRef, error) {
+func (b *Backend) chats() (channel, group int64) {
 	b.mu.RLock()
-	chatID, forum := b.chatID, b.forum
-	b.mu.RUnlock()
-	if chatID == 0 {
-		return "", api.NewBackendError("telegram channel %s is not connected", b.channel)
-	}
-	if !forum {
-		return "", nil
-	}
-	name := strings.TrimSpace(t.Title)
-	if name == "" {
-		name = t.Conversation
-	}
-	if r := []rune(name); len(r) > 128 { // Telegram's topic-name limit
-		name = string(r[:128])
-	}
-	id, err := b.api.createForumTopic(ctx, chatID, name)
-	if err != nil {
-		if isNotSupported(err) {
-			return "", api.NewNotSupported("telegram cannot create a topic in this chat: %v", err)
-		}
-		return "", api.NewBackendError("telegram createForumTopic: %v", err)
-	}
-	return backend.ThreadRef(strconv.Itoa(id)), nil
+	defer b.mu.RUnlock()
+	return b.chatID, b.groupID
 }
 
-// CloseThread closes a topic, leaving its history where the human can read it.
-func (b *Backend) CloseThread(ctx context.Context, ref backend.ThreadRef) error {
-	id, err := threadID(ref)
-	if err != nil || id == 0 {
-		return err
-	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
-	if err := b.api.closeForumTopic(ctx, chatID, id); err != nil {
-		if isNotSupported(err) {
-			return nil // already closed, or a chat without topics
-		}
-		return api.NewBackendError("telegram closeForumTopic: %v", err)
-	}
-	return nil
+// OpenThread creates nothing. A conversation is an agent's address; what the
+// reader sees is a post per question, made when the question is sent.
+func (b *Backend) OpenThread(_ context.Context, t backend.ThreadSpec) (backend.ThreadRef, error) {
+	return backend.ThreadRef("conv:" + t.Conversation), nil
 }
 
-// Send delivers a message, and any files with it, into a thread.
+// CloseThread has nothing to close: posts stay where the reader left them.
+func (b *Backend) CloseThread(context.Context, backend.ThreadRef) error { return nil }
+
+// Send delivers a message as a post of its own or as a comment under one.
 //
-// Text and files go as separate messages rather than as one captioned upload.
-// It is a little noisier and much more predictable: a caption is capped at
-// 1024 characters where a rendered question often is not, and it keeps Edit —
-// which is how a withdrawn question is struck — always pointed at a text
-// message. The reference returned is the first message sent, so that is what
-// a withdrawal edits.
+// A question is always a new post: one problem, one post, one thread of
+// replies. A drafted answer goes under the post it answers. Anything else — a
+// status note, a result — goes under the conversation's latest post while that
+// post is recent, and becomes a post of its own otherwise.
+//
+// Files go as separate comments after the text, never as a captioned upload: a
+// caption is capped at 1024 characters, and keeping the reference on a text
+// message keeps Edit — how a withdrawn question is struck — pointed at text.
 func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.Outgoing) (backend.MessageRef, error) {
-	id, err := threadID(ref)
-	if err != nil {
-		return backend.MessageRef{}, err
-	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
-	if chatID == 0 {
+	channel, group := b.chats()
+	if channel == 0 {
 		return backend.MessageRef{}, api.NewBackendError("telegram channel %s is not connected", b.channel)
 	}
-
 	markup, merr := keyboard(out.Choices)
 	if merr != nil {
 		return backend.MessageRef{}, merr
 	}
-	replyTo := 0
+	if strings.TrimSpace(out.Text) == "" && markup != "" {
+		return backend.MessageRef{}, api.NewInvalid("buttons need a message to sit under: this one has no text")
+	}
+
+	// Where does it go?
+	under := 0 // the post to comment under; 0 means a new post
 	if !out.ReplyTo.Zero() {
-		// A reply to a message that is gone would fail the send outright, so a
-		// ref that is not a message id is dropped rather than raised: the
-		// quotation is a convenience, the message is not.
-		if n, cerr := strconv.Atoi(out.ReplyTo.ID); cerr == nil {
-			replyTo = n
+		if isPost, n, err := parseRef(out.ReplyTo.ID); err == nil && isPost {
+			under = n
+		}
+	} else if !out.AwaitReply {
+		if n, ok := b.feed.recentPost(string(ref)); ok {
+			under = n
 		}
 	}
 
 	var first backend.MessageRef
-	if strings.TrimSpace(out.Text) != "" {
-		msgID, serr := b.sendText(ctx, chatID, id, out.Text, replyTo, markup)
-		if serr != nil {
-			return backend.MessageRef{}, serr
+	text := strings.TrimSpace(out.Text)
+	if under == 0 {
+		header := postHeader(out.ThreadTitle)
+		if text == "" {
+			text = "📎"
 		}
-		first = backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}
-	} else if markup != "" {
-		return backend.MessageRef{}, api.NewInvalid("buttons need a message to sit under: this one has no text")
+		// A question is the one thing worth a sound; everything else waits to
+		// be looked at.
+		id, err := b.sendText(ctx, channel, withHeader(header, text), 0, markup, !out.AwaitReply)
+		if err != nil {
+			return backend.MessageRef{}, err
+		}
+		b.feed.addPost(id, string(ref), header)
+		first = postRef(ref, id)
+		under = id
+		text = ""
 	}
 
+	copyID := 0
+	if text != "" || len(out.Files) > 0 {
+		c, ok := b.feed.copyOf(ctx, under)
+		if !ok {
+			return first, api.NewBackendError(
+				"telegram: the discussion group never received a copy of post %d, so nothing can be added under it — "+
+					"is the bot an administrator of the discussion group?", under)
+		}
+		copyID = c
+	}
+	if text != "" {
+		id, err := b.sendText(ctx, group, text, copyID, markup, true)
+		if err != nil {
+			return first, err
+		}
+		if first.Zero() {
+			first = commentRef(ref, id)
+		}
+	}
 	for _, f := range out.Files {
 		name := f.Name
 		if name == "" {
 			name = filepath.Base(f.Path)
 		}
-		msgID, ferr := b.api.sendDocument(ctx, chatID, id, f.Path, name, "")
+		id, ferr := b.api.sendDocument(ctx, group, copyID, f.Path, name, "")
 		if ferr != nil {
 			return first, api.NewBackendError("telegram sendDocument %q: %v", name, ferr)
 		}
 		if first.Zero() {
-			first = backend.MessageRef{Thread: ref, ID: strconv.Itoa(msgID)}
+			first = commentRef(ref, id)
 		}
-	}
-	if first.Zero() {
-		return backend.MessageRef{}, api.NewInvalid("nothing to send: no text and no files")
 	}
 	return first, nil
 }
@@ -303,10 +304,10 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 // sendText posts one text message, honouring a flood wait once. Telegram says
 // exactly how long to wait; ignoring it and retrying at once is how a bot earns
 // a longer ban.
-func (b *Backend) sendText(ctx context.Context, chatID int64, threadID int, text string, replyTo int, markup string) (int, error) {
+func (b *Backend) sendText(ctx context.Context, chatID int64, text string, replyTo int, markup string, silent bool) (int, error) {
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
-		msgID, err := b.api.sendMessage(ctx, chatID, threadID, text, replyTo, markup)
+		msgID, err := b.api.sendMessage(ctx, chatID, 0, text, replyTo, markup, silent)
 		if err == nil {
 			return msgID, nil
 		}
@@ -325,16 +326,20 @@ func (b *Backend) sendText(ctx context.Context, chatID int64, threadID int, text
 	return 0, api.NewBackendError("telegram sendMessage: %v", last)
 }
 
-// Edit replaces a sent message, which is how a withdrawn question stops looking
-// like a live one.
+// Edit replaces a sent message, which is how a withdrawn or answered question
+// stops looking like a live one. A post keeps its header line: the reader
+// still needs to see whose problem it was.
 func (b *Backend) Edit(ctx context.Context, ref backend.MessageRef, text string) error {
-	id, err := strconv.Atoi(ref.ID)
+	isPost, id, err := parseRef(ref.ID)
 	if err != nil {
-		return api.NewInvalid("telegram message ref %q is not a message id", ref.ID)
+		return err
 	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
+	channel, group := b.chats()
+	chatID := group
+	if isPost {
+		chatID = channel
+		text = withHeader(b.feed.header(id), text)
+	}
 	if err := b.api.editMessageText(ctx, chatID, id, text); err != nil {
 		if isNotSupported(err) {
 			return api.NewNotSupported("telegram will not edit this message: %v", err)
@@ -390,29 +395,19 @@ func (b *Backend) React(ctx context.Context, ref backend.MessageRef, mark backen
 	if !ok {
 		return api.NewInvalid("unknown mark %q", mark)
 	}
-	id, err := strconv.Atoi(ref.ID)
+	isPost, id, err := parseRef(ref.ID)
 	if err != nil {
-		return api.NewInvalid("telegram message ref %q is not a message id", ref.ID)
+		return err
 	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
+	channel, group := b.chats()
+	chatID := group
+	if isPost {
+		chatID = channel
+	}
 	if err := b.api.setMessageReaction(ctx, chatID, id, emoji); err != nil {
 		return api.NewBackendError("telegram setMessageReaction: %v", err)
 	}
 	return nil
-}
-
-func threadID(ref backend.ThreadRef) (int, error) {
-	s := strings.TrimSpace(string(ref))
-	if s == "" {
-		return 0, nil // a chat without topics: the one implicit thread
-	}
-	id, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, api.NewInvalid("telegram thread ref %q is not a topic id", ref)
-	}
-	return id, nil
 }
 
 func asAPIError(err error, target **apiError) bool {

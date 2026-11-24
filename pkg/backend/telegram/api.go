@@ -149,17 +149,37 @@ type tgChat struct {
 	Type     string `json:"type"`
 	Title    string `json:"title"`
 	Username string `json:"username"`
-	IsForum  bool   `json:"is_forum"`
+	// LinkedChatID is, on a channel, its discussion group: where every post
+	// is copied automatically and where the replies to it live.
+	LinkedChatID int64 `json:"linked_chat_id"`
+}
+
+// tgOrigin is where a forwarded message came from. Only the channel case
+// matters here: the discussion group's copy of a post names the post it
+// copies, and that is the only link between a post and its comments.
+type tgOrigin struct {
+	Type      string  `json:"type"`
+	Chat      *tgChat `json:"chat"`
+	MessageID int     `json:"message_id"`
 }
 
 type tgMessage struct {
 	MessageID int     `json:"message_id"`
 	From      *tgUser `json:"from"`
-	Chat      tgChat  `json:"chat"`
-	ThreadID  int     `json:"message_thread_id"`
-	Date      int64   `json:"date"`
-	Text      string  `json:"text"`
-	Caption   string  `json:"caption"`
+	// SenderChat is set when someone writes as a chat rather than as
+	// themselves — an anonymous group administrator writes as the group.
+	SenderChat *tgChat `json:"sender_chat"`
+	Chat       tgChat  `json:"chat"`
+	ThreadID   int     `json:"message_thread_id"`
+	// IsAutomaticForward marks the discussion group's copy of a channel post.
+	IsAutomaticForward bool      `json:"is_automatic_forward"`
+	ForwardOrigin      *tgOrigin `json:"forward_origin"`
+	ReplyTo            *struct {
+		MessageID int `json:"message_id"`
+	} `json:"reply_to_message"`
+	Date    int64  `json:"date"`
+	Text    string `json:"text"`
+	Caption string `json:"caption"`
 
 	Document *tgFile       `json:"document"`
 	Photo    []tgPhotoSize `json:"photo"`
@@ -167,12 +187,15 @@ type tgMessage struct {
 	Audio    *tgFile       `json:"audio"`
 	Voice    *tgFile       `json:"voice"`
 
-	// Forum housekeeping. These arrive as messages inside a topic; delivering
-	// one to an agent would seed it with an empty turn.
+	// Housekeeping that arrives as a message; delivering one to an agent would
+	// seed it with an empty turn.
 	TopicCreated  any `json:"forum_topic_created"`
 	TopicEdited   any `json:"forum_topic_edited"`
 	TopicClosed   any `json:"forum_topic_closed"`
 	TopicReopened any `json:"forum_topic_reopened"`
+	PinnedMessage any `json:"pinned_message"`
+	NewMembers    any `json:"new_chat_members"`
+	LeftMember    any `json:"left_chat_member"`
 }
 
 func (m *tgMessage) body() string {
@@ -183,7 +206,8 @@ func (m *tgMessage) body() string {
 }
 
 func (m *tgMessage) isService() bool {
-	return m.TopicCreated != nil || m.TopicEdited != nil || m.TopicClosed != nil || m.TopicReopened != nil
+	return m.TopicCreated != nil || m.TopicEdited != nil || m.TopicClosed != nil || m.TopicReopened != nil ||
+		m.PinnedMessage != nil || m.NewMembers != nil || m.LeftMember != nil
 }
 
 // tgCallbackQuery is a tap on an inline button. Its Data is the callback_data
@@ -234,11 +258,14 @@ func (a *botAPI) getUpdates(ctx context.Context, offset int64, timeout int) ([]t
 // of backticks, underscores and asterisks, and asking Telegram to parse it turns
 // a stray character into a 400 that silently drops the message someone was
 // waiting for.
-func (a *botAPI) sendMessage(ctx context.Context, chatID int64, threadID int, text string, replyTo int, markup string) (int, error) {
+func (a *botAPI) sendMessage(ctx context.Context, chatID int64, threadID int, text string, replyTo int, markup string, silent bool) (int, error) {
 	params := url.Values{
 		"chat_id":                  {strconv.FormatInt(chatID, 10)},
 		"text":                     {text},
 		"disable_web_page_preview": {"true"},
+	}
+	if silent {
+		params.Set("disable_notification", "true")
 	}
 	if threadID > 0 {
 		params.Set("message_thread_id", strconv.Itoa(threadID))
@@ -322,23 +349,5 @@ func (a *botAPI) setMessageReaction(ctx context.Context, chatID int64, messageID
 		"chat_id":    {strconv.FormatInt(chatID, 10)},
 		"message_id": {strconv.Itoa(messageID)},
 		"reaction":   {reaction},
-	}, nil)
-}
-
-func (a *botAPI) createForumTopic(ctx context.Context, chatID int64, name string) (int, error) {
-	var topic struct {
-		MessageThreadID int `json:"message_thread_id"`
-	}
-	err := a.call(ctx, "createForumTopic", url.Values{
-		"chat_id": {strconv.FormatInt(chatID, 10)},
-		"name":    {name},
-	}, &topic)
-	return topic.MessageThreadID, err
-}
-
-func (a *botAPI) closeForumTopic(ctx context.Context, chatID int64, threadID int) error {
-	return a.call(ctx, "closeForumTopic", url.Values{
-		"chat_id":           {strconv.FormatInt(chatID, 10)},
-		"message_thread_id": {strconv.Itoa(threadID)},
 	}, nil)
 }

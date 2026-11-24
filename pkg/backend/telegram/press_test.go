@@ -94,7 +94,11 @@ func connected(t *testing.T, cfg map[string]any) (*Backend, *botStub) {
 		t.Fatalf("unexpected type %T", b)
 	}
 	tg.api.base = srv.URL
-	tg.chatID, tg.forum = -100123, true
+	tg.chatID, tg.groupID = -100123, -100456
+	// One post already out: post 41 in the channel, its copy 7 in the group,
+	// belonging to conversation thread "7".
+	tg.feed.addPost(41, "7", "▣ agent")
+	tg.feed.sawCopy(41, 7)
 	return tg, stub
 }
 
@@ -104,7 +108,7 @@ func pressUpdate(from int64, data string) tgUpdate {
 		CallbackQuery: &tgCallbackQuery{
 			ID:      "cq-1",
 			From:    &tgUser{ID: from, Username: "someone"},
-			Message: &tgMessage{MessageID: 42, ThreadID: 7, Chat: tgChat{ID: -100123}},
+			Message: &tgMessage{MessageID: 42, ThreadID: 7, Chat: tgChat{ID: -100456}},
 			Data:    data,
 		},
 	}
@@ -141,7 +145,7 @@ func TestPressFromTheAllowListReachesTheDaemon(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("presses delivered = %d", len(got))
 	}
-	if got[0].Choice != "c-abc" || got[0].Message.ID != "42" || got[0].Thread != "7" {
+	if got[0].Choice != "c-abc" || got[0].Message.ID != "c42" || got[0].Thread != "7" {
 		t.Errorf("press = %+v", got[0])
 	}
 	if got[0].AuthorID != "11" {
@@ -217,7 +221,7 @@ func TestKeyboardRefusesAHandleTelegramCannotCarry(t *testing.T) {
 // with it. A live button on a decided question is one the reader can still press.
 func TestEditClearsTheKeyboard(t *testing.T) {
 	tg, stub := connected(t, map[string]any{"chat": "-100123"})
-	if err := tg.Edit(context.Background(), backend.MessageRef{Thread: "7", ID: "42"}, "decided"); err != nil {
+	if err := tg.Edit(context.Background(), backend.MessageRef{Thread: "7", ID: "c42"}, "decided"); err != nil {
 		t.Fatal(err)
 	}
 	edits := stub.calledWith("editMessageText")
@@ -246,7 +250,7 @@ func TestSendWithChoicesDrawsThemUnderTheQuotedQuestion(t *testing.T) {
 	tg, stub := connected(t, map[string]any{"chat": "-100123"})
 	_, err := tg.Send(context.Background(), "7", backend.Outgoing{
 		Text:    "Draft by the orchestrator:",
-		ReplyTo: backend.MessageRef{Thread: "7", ID: "41"},
+		ReplyTo: backend.MessageRef{Thread: "7", ID: "p41"},
 		Choices: []api.Choice{{ID: "send", Label: "Send", Answer: "yes", Ref: "c-1"}},
 	})
 	if err != nil {
@@ -256,7 +260,8 @@ func TestSendWithChoicesDrawsThemUnderTheQuotedQuestion(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("sendMessage called %d times", len(sends))
 	}
-	for _, want := range []string{"reply_markup", "callback_data", "reply_to_message_id=41"} {
+	// Under the post it answers: a reply to the post's copy in the group.
+	for _, want := range []string{"chat_id=-100456", "reply_markup", "callback_data", "reply_to_message_id=7"} {
 		if !strings.Contains(sends[0], want) {
 			t.Errorf("the drafted answer is missing %q: %s", want, sends[0])
 		}
@@ -294,9 +299,9 @@ func TestEditFallsBackWhenTheEmptyKeyboardIsRefused(t *testing.T) {
 		t.Fatalf("unexpected type %T", b)
 	}
 	tg.api.base = srv.URL
-	tg.chatID = -100123
+	tg.chatID, tg.groupID = -100123, -100456
 
-	if err := tg.Edit(context.Background(), backend.MessageRef{Thread: "7", ID: "42"}, "withdrawn"); err != nil {
+	if err := tg.Edit(context.Background(), backend.MessageRef{Thread: "7", ID: "c42"}, "withdrawn"); err != nil {
 		t.Fatalf("the edit gave up instead of retrying without the keyboard: %v", err)
 	}
 	if len(bodies) != 2 {

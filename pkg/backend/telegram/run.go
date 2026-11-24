@@ -92,7 +92,7 @@ func (b *Backend) Run(ctx context.Context, sink backend.Sink) error {
 // replaced lets go of its long poll, and it clears itself. A second poller that
 // is there to stay — the Claude Code Telegram plugin, most often — produces one
 // every time, and it is the failure that looks like an outage and is not: the
-// daemon keeps sending, the topics fill up, and replies simply never arrive.
+// daemon keeps sending, the posts keep appearing, and replies simply never arrive.
 //
 // So the first few are quiet and the rest are loud. Calling a handover a failed
 // channel is how an operator learns to scroll past the message that matters.
@@ -105,7 +105,7 @@ func conflictReport(count int) (message string, failed bool) {
 }
 
 // handle turns one update into an inbound message or a button press, dropping
-// everything that is not a person acting in this chat.
+// everything that is not a person acting under one of courier's posts.
 func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	if up.CallbackQuery != nil {
 		b.handlePress(ctx, sink, up.CallbackQuery)
@@ -113,26 +113,39 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	}
 	log := b.logger()
 	msg := up.Message
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
+	channel, group := b.chats()
+	if msg == nil || msg.Chat.ID != group || group == 0 {
+		return
+	}
+	// The discussion group's copy of a post: the only link between a post and
+	// the replies that will be written under it.
+	if msg.IsAutomaticForward {
+		if o := msg.ForwardOrigin; o != nil && o.Chat != nil && o.Chat.ID == channel && o.MessageID > 0 {
+			b.feed.sawCopy(o.MessageID, msg.MessageID)
+		}
+		return
+	}
+	if msg.isService() {
+		return
+	}
+	author, authorID, ok := b.sender(msg, channel, group)
+	if !ok {
+		return
+	}
 
-	switch {
-	case msg == nil, msg.From == nil, msg.From.IsBot, msg.isService():
-		return
-	case msg.Chat.ID != chatID:
+	root := msg.ThreadID
+	if root == 0 && msg.ReplyTo != nil {
+		root = msg.ReplyTo.MessageID
+	}
+	thread, _, known := b.feed.threadOfCopy(root)
+	if !known {
+		log.Warn("a message outside any post's comments", "message", msg.MessageID, "thread", msg.ThreadID)
+		b.replyIn(ctx, msg.MessageID, "Не понял, к какому посту это. Ответь в комментариях под нужным постом — так ответ попадёт тому агенту, чей это вопрос.")
 		return
 	}
-	if len(b.allow) > 0 && !b.allow[msg.From.ID] {
-		log.Warn("refusing a message from a sender not in allowFrom", "from", msg.From.ID)
-		return
-	}
-	ref := backend.ThreadRef("")
-	if msg.ThreadID > 0 {
-		ref = backend.ThreadRef(strconv.Itoa(msg.ThreadID))
-	}
+	ref := backend.ThreadRef(thread)
 
-	files := b.download(ctx, msg, string(ref))
+	files := b.download(ctx, msg, thread)
 	text := msg.body()
 	spoken := false
 	// A voice message carries words, and the words are the whole of it. An agent
@@ -140,7 +153,7 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	// travel at all — handing over the path to an .oga nobody can open would be
 	// a delivery in name only.
 	if msg.Voice != nil && text == "" {
-		heard, ok := b.listen(ctx, msg, ref)
+		heard, ok := b.listen(ctx, msg)
 		if !ok {
 			return // the person has been told; there are no words to carry
 		}
@@ -152,9 +165,9 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 
 	sink.Receive(ctx, b.channel, backend.Inbound{
 		Thread:   ref,
-		Ref:      backend.MessageRef{Thread: ref, ID: strconv.Itoa(msg.MessageID)},
-		Author:   msg.From.label(),
-		AuthorID: strconv.FormatInt(msg.From.ID, 10),
+		Ref:      commentRef(ref, msg.MessageID),
+		Author:   author,
+		AuthorID: authorID,
 		Text:     text,
 		Spoken:   spoken,
 		At:       time.Unix(msg.Date, 0).UTC(),
@@ -162,39 +175,60 @@ func (b *Backend) handle(ctx context.Context, sink backend.Sink, up tgUpdate) {
 	})
 }
 
+// sender decides who wrote a message and whether they may drive an agent.
+//
+// Someone writing as the group or as the channel is an administrator — nobody
+// else can — so that is accepted without an allow-list entry: the reader of
+// this feed usually comments anonymously, and Telegram then reports the
+// sender as a bot named GroupAnonymousBot. Any other bot is dropped, and a
+// person must be on the allow-list when one is configured.
+func (b *Backend) sender(msg *tgMessage, channel, group int64) (author, id string, ok bool) {
+	if sc := msg.SenderChat; sc != nil {
+		if sc.ID == group || sc.ID == channel {
+			return "admin (" + sc.Title + ")", "chat:" + strconv.FormatInt(sc.ID, 10), true
+		}
+		return "", "", false
+	}
+	if msg.From == nil || msg.From.IsBot {
+		return "", "", false
+	}
+	if len(b.allow) > 0 && !b.allow[msg.From.ID] {
+		b.logger().Warn("refusing a message from a sender not in allowFrom", "from", msg.From.ID)
+		return "", "", false
+	}
+	return msg.From.label(), strconv.FormatInt(msg.From.ID, 10), true
+}
+
 // listen turns a voice message into words, or tells the person why it could not.
 //
 // The message is named to the transcriber the way the transport names it — this
 // chat, this message id — and never by anything read out of the audio. Which
-// agent an answer belongs to is decided by the topic it was spoken in, and a
+// agent an answer belongs to is decided by the post it was spoken under, and a
 // recognised word must not be able to change that.
 //
 // Every failure ends in the thread rather than in the log alone. The person who
 // spoke is the only one who can do anything about any of it, and a voice message
 // that vanishes silently is the worst of the available outcomes: they believe
 // they have answered.
-func (b *Backend) listen(ctx context.Context, msg *tgMessage, thread backend.ThreadRef) (string, bool) {
+func (b *Backend) listen(ctx context.Context, msg *tgMessage) (string, bool) {
 	log := b.logger()
 	if b.hear == nil {
 		log.Warn("a voice message arrived but this channel has no transcription configured", "message", msg.MessageID)
-		b.sayInThread(ctx, thread, "🎤 I cannot turn voice into words on this channel — please write it out.")
+		b.replyIn(ctx, msg.MessageID, "🎤 I cannot turn voice into words on this channel — please write it out.")
 		return "", false
 	}
 
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
-
+	_, group := b.chats()
 	started := time.Now()
-	res, err := b.hear.heard(ctx, chatID, msg.MessageID)
+	res, err := b.hear.heard(ctx, group, msg.MessageID)
 	if err != nil {
 		log.Error("could not transcribe a voice message", "message", msg.MessageID, "err", err)
-		b.sayInThread(ctx, thread, "🎤 could not transcribe that — please write it out.")
+		b.replyIn(ctx, msg.MessageID, "🎤 could not transcribe that — please write it out.")
 		return "", false
 	}
 	if res.Status != transcribedOK || strings.TrimSpace(res.Text) == "" {
 		log.Warn("a voice message came back without words", "message", msg.MessageID, "status", res.Status)
-		b.sayInThread(ctx, thread, "🎤 "+res.why()+".")
+		b.replyIn(ctx, msg.MessageID, "🎤 "+res.why()+".")
 		return "", false
 	}
 	log.Info("transcribed a voice message", "message", msg.MessageID, "status", res.Status,
@@ -202,19 +236,13 @@ func (b *Backend) listen(ctx context.Context, msg *tgMessage, thread backend.Thr
 	return strings.TrimSpace(res.Text), true
 }
 
-// sayInThread posts a short line where the person is looking. Best-effort: it
-// is how they are told something went wrong, and failing to tell them is worth
-// a log line and nothing more.
-func (b *Backend) sayInThread(ctx context.Context, thread backend.ThreadRef, text string) {
-	id, err := threadID(thread)
-	if err != nil {
-		return
-	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
-	if _, serr := b.api.sendMessage(ctx, chatID, id, text, 0, ""); serr != nil {
-		b.logger().Warn("could not tell the reader about a voice message", "err", serr)
+// replyIn answers a message where the person is looking — a reply to it, so it
+// lands in the same comment thread. Best-effort: it is how they are told
+// something went wrong, and failing to tell them is worth a log line only.
+func (b *Backend) replyIn(ctx context.Context, messageID int, text string) {
+	_, group := b.chats()
+	if _, err := b.api.sendMessage(ctx, group, 0, text, messageID, "", true); err != nil {
+		b.logger().Warn("could not tell the reader something", "err", err)
 	}
 }
 
@@ -235,10 +263,29 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 	if cq.From == nil || cq.From.IsBot || cq.Message == nil {
 		return
 	}
-	b.mu.RLock()
-	chatID := b.chatID
-	b.mu.RUnlock()
-	if cq.Message.Chat.ID != chatID {
+	channel, group := b.chats()
+	var (
+		ref   backend.ThreadRef
+		mref  backend.MessageRef
+		known bool
+	)
+	switch cq.Message.Chat.ID {
+	case channel:
+		var t string
+		t, known = b.feed.threadOfPost(cq.Message.MessageID)
+		ref = backend.ThreadRef(t)
+		mref = postRef(ref, cq.Message.MessageID)
+	case group:
+		root := cq.Message.ThreadID
+		if root == 0 && cq.Message.ReplyTo != nil {
+			root = cq.Message.ReplyTo.MessageID
+		}
+		var t string
+		t, _, known = b.feed.threadOfCopy(root)
+		ref = backend.ThreadRef(t)
+		mref = commentRef(ref, cq.Message.MessageID)
+	}
+	if !known {
 		// Not ours to act on, but the clock is spinning on somebody's button.
 		b.answerPress(ctx, cq.ID, "", false)
 		return
@@ -249,10 +296,6 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 		return
 	}
 
-	ref := backend.ThreadRef("")
-	if cq.Message.ThreadID > 0 {
-		ref = backend.ThreadRef(strconv.Itoa(cq.Message.ThreadID))
-	}
 	// Logged on arrival, before the daemon decides anything. A press is the one
 	// inbound event that leaves no trace in the chat when it goes wrong — the
 	// message it was on looks the same either way — so the log is the only place
@@ -261,7 +304,7 @@ func (b *Backend) handlePress(ctx context.Context, sink backend.Sink, cq *tgCall
 
 	res, err := sink.Press(ctx, b.channel, backend.Press{
 		Thread:   ref,
-		Message:  backend.MessageRef{Thread: ref, ID: strconv.Itoa(cq.Message.MessageID)},
+		Message:  mref,
 		Choice:   cq.Data,
 		Author:   cq.From.label(),
 		AuthorID: strconv.FormatInt(cq.From.ID, 10),

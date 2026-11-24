@@ -267,6 +267,7 @@ func (s *Service) Press(ctx context.Context, channel string, p backend.Press) (b
 	// taken stops looking like one still on offer.
 	edited := s.editMessage(ctx, conv, settled,
 		api.RenderChosen(settled.Spec.Body, settled.Spec.DraftedBy, settled.Spec.Choices, choice, p.Author))
+	s.editMessage(ctx, conv, q, answeredText(q.Spec.Body, choice.Answer))
 
 	s.log.Info("a drafted answer was taken",
 		"conversation", conv.Metadata.Name, "question", q.Metadata.Name, "draft", draft.Metadata.Name,

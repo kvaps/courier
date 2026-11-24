@@ -110,7 +110,7 @@ func TestAVoiceMessageArrivesAsWords(t *testing.T) {
 		Message: &tgMessage{
 			MessageID: 42, ThreadID: 7, Date: 1,
 			From:  &tgUser{ID: 11, Username: "kvaps"},
-			Chat:  tgChat{ID: -100123},
+			Chat:  tgChat{ID: -100456},
 			Voice: &tgFile{FileID: "v", MimeType: "audio/ogg"},
 		},
 	})
@@ -145,7 +145,7 @@ func TestAVoiceMessageThatCannotBeHeardIsNotDelivered(t *testing.T) {
 		Message: &tgMessage{
 			MessageID: 42, ThreadID: 7, Date: 1,
 			From:  &tgUser{ID: 11, Username: "kvaps"},
-			Chat:  tgChat{ID: -100123},
+			Chat:  tgChat{ID: -100456},
 			Voice: &tgFile{FileID: "v"},
 		},
 	})
@@ -157,8 +157,8 @@ func TestAVoiceMessageThatCannotBeHeardIsNotDelivered(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("the speaker was not told: %v", sends)
 	}
-	if !strings.Contains(sends[0], "Premium") || !strings.Contains(sends[0], "message_thread_id=7") {
-		t.Errorf("the note is wrong or in the wrong topic: %s", sends[0])
+	if !strings.Contains(sends[0], "Premium") || !strings.Contains(sends[0], "reply_to_message_id=42") {
+		t.Errorf("the note is wrong or not under the voice message: %s", sends[0])
 	}
 }
 
@@ -173,7 +173,7 @@ func TestWithoutATranscriberAVoiceMessageIsRefusedOutLoud(t *testing.T) {
 		Message: &tgMessage{
 			MessageID: 42, ThreadID: 7, Date: 1,
 			From:  &tgUser{ID: 11, Username: "kvaps"},
-			Chat:  tgChat{ID: -100123},
+			Chat:  tgChat{ID: -100456},
 			Voice: &tgFile{FileID: "v"},
 		},
 	})

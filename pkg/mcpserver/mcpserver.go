@@ -38,7 +38,7 @@ func New(cfg Config) *mcp.Server {
 		Name: "open_conversation",
 		Description: "Open a thread with the operator and, optionally, bind it to an agent. " +
 			"This is the orchestrator's call: one conversation per agent, made once, before that agent has anything to say. " +
-			"On a forum-style channel it creates a topic, so two agents asking about unrelated things do not interleave into one stream. " +
+			"Nothing appears to the operator until the agent asks or sends: each question becomes a post of its own, and replies under that post come back to this conversation. " +
 			"Set agent_sink and agent_address to have whatever the operator writes here pushed straight to that agent — without it the agent " +
 			"only sees a message the next time it calls receive, which for an agent in the middle of a long turn can be a while.",
 	}, h.openConversation)

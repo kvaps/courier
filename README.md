@@ -2,7 +2,7 @@
 
 A local daemon that carries a question from an agent to a person, and the answer back.
 
-An agent that reaches a decision only you can make has nowhere to put it. It stops, and you find out by opening a session list. courier gives it somewhere to put it: a thread in Telegram, one per agent, that you can also write into at any time — and what you write reaches the agent, waking it if it had stopped.
+An agent that reaches a decision only you can make has nowhere to put it. It stops, and you find out by opening a session list. courier gives it somewhere to put it: a post in a Telegram channel, one per question, with the replies under it as comments. Whatever you write under a post reaches the agent that owns it, waking it if it had stopped — you never pick a recipient, find the agent, or tidy up per-agent threads.
 
 It is a message daemon with a Kubernetes-shaped API and pluggable transports. Telegram is the first one; nothing above `pkg/backend` knows it exists.
 
@@ -47,13 +47,25 @@ You reply `OK`. The agent's `ask` call returns with your words. If it had stoppe
 
 ```sh
 make build
-./courier serve --telegram-chat https://t.me/c/1234567890/1
+./courier serve --telegram-chat https://t.me/c/1234567890
 claude mcp add --transport http courier http://127.0.0.1:7717/mcp
 ```
 
 The bot token is read from `~/.claude/channels/telegram/.env` (`TELEGRAM_BOT_TOKEN`), or from the environment, or from `--telegram-token-file`. It is never a flag and never part of a resource — see [The token](#the-token).
 
-The bot must be an **administrator** of the group, with topics enabled. Administrator is not about creating topics: a bot with privacy mode on sees only messages addressed to it, and administrator rights are what let it read your plain replies. (Verified rather than assumed: with `can_read_all_group_messages: false`, an admin bot still receives every message in the group.)
+The chat is a **channel with a discussion group linked** (channel settings → Edit → Discussion; neither the Bot API nor a user client can link one, so this is done by hand once). The bot must be an **administrator of both**: of the channel to post and edit, and of the discussion group to read your replies — a bot with privacy mode on sees only messages addressed to it, and administrator rights are what let it read plain comments. courier refuses to start against a chat that is not a channel, or a channel without a discussion group.
+
+### How the feed is laid out
+
+- **A question is a post.** One problem, one post, with a notification. The first line names the agent (the conversation's title).
+- **Replies are comments under the post.** Text, voice or files. A reply goes to the conversation that owns the post — the thread it is written in decides, never the words.
+- **A note that is not a question** goes as a silent comment under the agent's latest post while that post is under 12 hours old, and as a silent post of its own otherwise.
+- **A drafted answer** goes as a comment under the question's post, with its buttons.
+- **An answered or withdrawn question is rewritten in place**, so the feed shows at a glance what is still open.
+- A comment written outside any post's thread is not delivered anywhere; the bot replies asking you to write under the post.
+- Commenting as an anonymous administrator works: Telegram reports such a message as written by the group, which only an administrator can do.
+
+Telegram links a post to its comments only through the discussion group's automatic copy of the post; courier keeps that map in its state directory (`feed.json`) so it survives a restart.
 
 ## The MCP tools
 
@@ -99,7 +111,7 @@ curl -sX POST localhost:7717/api/v1/messages/externalip-api-7/draft -d @draft.js
 }
 ```
 
-The topic gets a message quoting the question:
+The question's post gets a comment with the draft:
 
 ```
 Draft by orchestrator:
@@ -174,7 +186,7 @@ Tap one — or write your own answer.
 
 Tap it and it becomes the answer, recorded as an approval: `draftedBy: speech recognition`, confirmed by you. Say it wrong and you fix it the way you fix any draft — type the correction, which answers the question and takes the offer down. There is no second button for that, because typing already does it.
 
-**Which agent hears it is decided by the topic, never by the words.** A misheard sentence can be wrong about anything except where it goes.
+**Which agent hears it is decided by the post it is spoken under, never by the words.** A misheard sentence can be wrong about anything except where it goes.
 
 When nothing is waiting on an answer there is nothing to confirm, and the words travel as they are — marked as heard rather than typed, with the envelope telling the agent to read an odd word as an odd word rather than as an instruction.
 
@@ -234,9 +246,9 @@ It is read from the environment or a `KEY=VALUE` file, and from nowhere else. It
 
 **Telegram allows exactly one `getUpdates` consumer per bot token.** Everything else here is forgiving; this is not, and it is the failure that looks like an outage and is not.
 
-This is not theoretical — it happened. The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env`, and it starts **on every session start**, not once. So each new Claude Code session took the token back, courier's poll began returning `409 Conflict`, and every message written in the group from then on went to the plugin instead. Sending kept working, which is what makes it disorienting: the daemon looks alive, the topics fill up, and replies simply never arrive.
+This is not theoretical — it happened. The Claude Code Telegram channel plugin polls with the token in `~/.claude/channels/telegram/.env`, and it starts **on every session start**, not once. So each new Claude Code session took the token back, courier's poll began returning `409 Conflict`, and every message written in the group from then on went to the plugin instead. Sending kept working, which is what makes it disorienting: the daemon looks alive, the posts keep appearing, and replies simply never arrive.
 
-The cure was to disable the plugin (`telegram@claude-plugins-official`). The alternative, if you want both, is to give courier its own bot: create one in @BotFather, add it to the group as an administrator with `can_manage_topics`, and start courier with `TELEGRAM_BOT_TOKEN` set in its own environment. Sending is unaffected either way — several bots may post into the same group.
+The cure was to disable the plugin (`telegram@claude-plugins-official`). The alternative, if you want both, is to give courier its own bot: create one in @BotFather, add it as an administrator of the channel and of its discussion group, and start courier with `TELEGRAM_BOT_TOKEN` set in its own environment. Sending is unaffected either way — several bots may post into the same group.
 
 **Restarting produces one of these, and it is not the same thing.** The process being replaced still holds a long poll open, and Telegram takes a second or two to notice the connection is gone, so a new daemon started immediately gets a conflict or two and then settles. Those are logged and nothing else; only from the third in a row does the channel go `Failed`, about six seconds in. The distinction is the point — calling a handover a failed channel is how an operator learns to scroll past the message that matters. To avoid them entirely, let the old process exit before starting the new one:
 
@@ -254,7 +266,7 @@ curl -s localhost:7717/api/healthz
 
 ## What a deletion does not do
 
-Deleting a message in Telegram does not retract it from an agent that already received it. The message disappears from the topic, and the agent still has it in its conversation, because the Bot API delivers no deletion event a bot could act on — courier never learns it happened.
+Deleting a message in Telegram does not retract it from an agent that already received it. The message disappears from the thread, and the agent still has it in its conversation, because the Bot API delivers no deletion event a bot could act on — courier never learns it happened.
 
 So a message is committed the moment it is sent. If you wrote something you did not mean, say the next thing rather than deleting the last one: the agent read the first version and will not see it vanish.
 

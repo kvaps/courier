@@ -37,8 +37,8 @@ type Backend interface {
 	// transport gave up and the channel is Failed.
 	Run(ctx context.Context, sink Sink) error
 
-	// OpenThread creates the transport-side container for a conversation — on
-	// Telegram a forum topic — and returns its reference. Implementations that
+	// OpenThread creates the transport-side container for a conversation, if
+	// the transport has one, and returns its reference. Implementations that
 	// have no notion of threads return the channel's own reference, so every
 	// conversation shares one stream.
 	OpenThread(ctx context.Context, t ThreadSpec) (ThreadRef, error)
@@ -116,6 +116,9 @@ type Outgoing struct {
 	Body api.Body
 	// AwaitReply marks a question, which some transports can present specially.
 	AwaitReply bool
+	// ThreadTitle is the conversation's title — on Telegram, the header line of
+	// a post, so the reader sees whose problem it is.
+	ThreadTitle string
 	// Choices, when set, are the buttons to draw under the message, in order.
 	// A transport without buttons reports NotSupported rather than delivering
 	// the text alone: a drafted answer whose buttons silently vanished would
