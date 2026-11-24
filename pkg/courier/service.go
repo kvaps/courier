@@ -89,6 +89,7 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 	s.resumeReviews()
+	s.background(s.runBoards)
 	return nil
 }
 

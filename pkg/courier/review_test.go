@@ -153,3 +153,31 @@ func TestPublishingWhatIsNotHeldIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want Conflict", err)
 	}
 }
+
+// The board shows what waits on the reader and what the reviewer settled.
+func TestTheBoardCountsWaitingSettledAndHeld(t *testing.T) {
+	svc, _, _ := withReviewer(t, 600)
+	openConv(t, svc, "b", &api.AgentRef{Sink: "fake", Address: "b-session"})
+	openConv(t, svc, "c", &api.AgentRef{Sink: "fake", Address: "c-session"})
+
+	settled := ask(t, svc, "a", "settled?")
+	if _, err := svc.AnswerFor(context.Background(), settled.Metadata.Name, "yes", "orchestrator"); err != nil {
+		t.Fatal(err)
+	}
+	waiting := ask(t, svc, "b", "waiting?")
+	if _, err := svc.Publish(context.Background(), waiting.Metadata.Name, nil, "orchestrator"); err != nil {
+		t.Fatal(err)
+	}
+	ask(t, svc, "c", "held?")
+
+	board := svc.board("chan", time.Now())
+	if len(board.Waiting) != 1 || board.Waiting[0].Summary != "waiting?" {
+		t.Errorf("waiting = %+v", board.Waiting)
+	}
+	if len(board.Settled) != 1 || board.Settled[0].Answer != "yes" {
+		t.Errorf("settled = %+v", board.Settled)
+	}
+	if board.Held != 1 {
+		t.Errorf("held = %d", board.Held)
+	}
+}

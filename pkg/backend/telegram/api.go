@@ -334,6 +334,15 @@ func (a *botAPI) editMessageCaption(ctx context.Context, chatID int64, messageID
 	}, nil)
 }
 
+// pinChatMessage pins a message without notifying anyone.
+func (a *botAPI) pinChatMessage(ctx context.Context, chatID int64, messageID int) error {
+	return a.call(ctx, "pinChatMessage", url.Values{
+		"chat_id":              {strconv.FormatInt(chatID, 10)},
+		"message_id":           {strconv.Itoa(messageID)},
+		"disable_notification": {"true"},
+	}, nil)
+}
+
 // isBadRequest reports a 400: the content was refused, as opposed to the
 // transport failing or asking to wait.
 func isBadRequest(err error) bool {

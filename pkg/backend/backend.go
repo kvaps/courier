@@ -279,3 +279,32 @@ func (r MessageRef) String() string { return fmt.Sprintf("%s/%s", r.Thread, r.ID
 
 // Zero reports whether the reference names nothing.
 func (r MessageRef) Zero() bool { return r.ID == "" }
+
+// Boarder is a backend that can keep one standing message up to date: what is
+// waiting on the reader, and what was settled without them. It is optional; a
+// transport without it simply has no board.
+type Boarder interface {
+	Board(ctx context.Context, b Board) error
+}
+
+// Board is the state of a channel as the reader needs it at a glance.
+type Board struct {
+	// Waiting are questions the reader can see and has not answered, oldest
+	// first.
+	Waiting []BoardItem
+	// Settled are questions the reviewer answered on the reader's behalf
+	// recently, newest first, so the reader can dispute any of them.
+	Settled []BoardItem
+	// Held is how many questions the reviewer is looking at right now.
+	Held int
+}
+
+// BoardItem is one line on the board.
+type BoardItem struct {
+	Title   string
+	Summary string
+	Answer  string
+	Since   time.Time
+	// Ref is where the item can be opened, if it was ever shown.
+	Ref MessageRef
+}

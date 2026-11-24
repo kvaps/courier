@@ -54,6 +54,8 @@ type feedPost struct {
 }
 
 type feedState struct {
+	// Board is the pinned summary post, if one has been made.
+	Board  int               `json:"board,omitempty"`
 	Posts  map[int]*feedPost `json:"posts"`
 	Copies map[int]int       `json:"copies"`
 	Last   map[string]int    `json:"last"`
@@ -84,6 +86,7 @@ func newFeed(stateDir string) *feed {
 				if st.Last != nil {
 					f.st.Last = st.Last
 				}
+				f.st.Board = st.Board
 			}
 		}
 	}
@@ -301,4 +304,24 @@ func withHeader(header, text string) string {
 		return text
 	}
 	return header + "\n\n" + text
+}
+
+func (f *feed) boardPost() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.st.Board
+}
+
+// setBoard records the summary post. It belongs to the given thread so that
+// comments under it reach someone, but it never becomes that thread's latest
+// post: an agent's next note must not land under the summary.
+func (f *feed) setBoard(id int, thread string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.st.Board = id
+	if thread != "" {
+		f.st.Posts[id] = &feedPost{Thread: thread, At: time.Now().UTC()}
+	}
+	f.save()
+	f.copied.Broadcast()
 }

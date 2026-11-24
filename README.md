@@ -93,6 +93,10 @@ A received filename is a hint and never a path. Courier builds the name on disk 
 
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
 
+## The board
+
+A transport that can keep one standing message current gets a **board**: a pinned post, edited in place and never notifying, that says what is waiting on the reader (with links to the posts, oldest first), what the reviewer answered on their behalf in the last 24 hours, and how many questions the reviewer is looking at. It is the pull half of the feed: instead of a sound per question, one place to look. Comments under the board go to the channel's `defaultConversation`, which is how the reader disputes an answer given for them. The board is recomputed every 30 seconds and touched only when it changed.
+
 ## A reviewer before the reader
 
 A channel can name a **reviewer** — a conversation whose agent, typically the orchestrator, sees every other agent's question before the reader does:
