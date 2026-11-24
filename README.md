@@ -93,6 +93,21 @@ A received filename is a hint and never a path. Courier builds the name on disk 
 
 **One question at a time per conversation.** You answer by writing in the thread, not by quoting, so two open questions would mean the daemon guessing which one a bare `OK` belongs to. A second `ask` is refused, naming the first. An agent that no longer needs an answer calls `cancel`, which edits the message you are looking at so a dead question stops looking live.
 
+## A reviewer before the reader
+
+A channel can name a **reviewer** — a conversation whose agent, typically the orchestrator, sees every other agent's question before the reader does:
+
+```json
+{"spec": {"backend": "telegram", "reviewer": "mwo-orchestrator", "reviewTimeoutSeconds": 600, "config": {…}}}
+```
+
+A question is then **held**: recorded, open, and the asking agent waits on it as usual, but nothing is posted. The reviewer's session is handed the question with two calls it can make:
+
+- `POST /api/v1/messages/{name}/answer` `{"text", "by"}` — settle it on the reader's behalf. The agent is told whose answer it is; the reader never sees the question.
+- `POST /api/v1/messages/{name}/publish` `{"by", "body"}` — show it to the reader, rewritten so it reads cold, or unchanged without `body`. The agent's own words stay on the record in `status.review.original`.
+
+A held question the reviewer does not act on within the timeout (default 10 minutes) is published as it is, with `status.review.action: timeout`: a reviewer that is down costs the reader a delay, never a question. Timeouts survive a restart. The reviewer's own questions are not held, and neither are drafted answers or notes. `answer` also works on a question already published — the reviewer answering for the reader — and rewrites the post to show who answered.
+
 ## Answering with one tap
 
 Composing the answer is the expensive half. You read the question on a phone, between ten other agents, about a thread you have not seen in a week — and then you have to write something. So the orchestrator writes it for you, and you say yes.

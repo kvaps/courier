@@ -226,3 +226,45 @@ func parseTimeout(s string, def time.Duration) (time.Duration, error) {
 	}
 	return 0, api.NewBadRequest("timeout %q is neither a duration (30s) nor a number of seconds", s)
 }
+
+type publishBody struct {
+	By   string    `json:"by,omitempty"`
+	Body *api.Body `json:"body,omitempty"`
+}
+
+// publishMessage shows a held question to the reader, as written or rewritten.
+func (s *Server) publishMessage(w http.ResponseWriter, r *http.Request) {
+	var body publishBody
+	if r.ContentLength > 0 {
+		if err := decode(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	m, err := s.svc.Publish(r.Context(), r.PathValue("name"), body.Body, body.By)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+type answerBody struct {
+	Text string `json:"text"`
+	By   string `json:"by,omitempty"`
+}
+
+// answerMessage answers an open question on the reader's behalf.
+func (s *Server) answerMessage(w http.ResponseWriter, r *http.Request) {
+	var body answerBody
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	m, err := s.svc.AnswerFor(r.Context(), r.PathValue("name"), body.Text, body.By)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}

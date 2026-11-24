@@ -75,6 +75,8 @@ func New(opts Options) *Server {
 	mux.HandleFunc("GET /api/v1/messages/{name}", s.getMessage)
 	mux.HandleFunc("POST /api/v1/messages/{name}/cancel", s.cancelMessage)
 	mux.HandleFunc("POST /api/v1/messages/{name}/draft", s.draftMessage)
+	mux.HandleFunc("POST /api/v1/messages/{name}/publish", s.publishMessage)
+	mux.HandleFunc("POST /api/v1/messages/{name}/answer", s.answerMessage)
 	mux.HandleFunc("GET /api/v1/messages/{name}/answer", s.awaitAnswer)
 
 	mux.HandleFunc("GET /api/v1/watch", s.watchAll)
@@ -276,6 +278,8 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 		"version":    s.version,
 		"endpoints": []endpoint{
 			{"GET", "/api/healthz", "Daemon health and per-channel readiness."},
+			{"POST", "/api/v1/messages/{name}/publish", "Reviewer: show a held question to the reader, optionally rewritten ({by, body})."},
+			{"POST", "/api/v1/messages/{name}/answer", "Reviewer: answer an open question on the reader's behalf ({text, by})."},
 			{"GET", "/api/v1/channels", "List transports. Add ?watch=true&resourceVersion=N to stream changes."},
 			{"POST", "/api/v1/channels", "Register a transport and connect it. The config names a credential; it must never contain one."},
 			{"GET", "/api/v1/channels/{name}", "One transport, including what it connected as."},

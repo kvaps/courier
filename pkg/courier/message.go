@@ -66,11 +66,29 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 	}
 	m.Status = api.MessageStatus{Phase: api.PhasePending}
 
+	// A question can be held for the reviewer to look at first. It is recorded
+	// and open — the asking agent waits on it exactly as on a published one —
+	// but it reaches the reader only once the reviewer publishes it, answers
+	// it, or fails to do either in time.
+	reviewer, hold := s.reviewerFor(conv, m)
+	if hold {
+		m.Status = api.MessageStatus{Phase: api.PhaseHeld}
+	}
+
 	created, err := s.messages.Create(m)
 	if err != nil {
 		return nil, err
 	}
+	if hold {
+		return s.hold(conv, created, reviewer)
+	}
+	return s.deliver(ctx, conv, be, created, quoted)
+}
 
+// deliver puts a recorded outbound message in front of the reader.
+func (s *Service) deliver(ctx context.Context, conv *api.Conversation, be backend.Backend,
+	created *api.Message, quoted backend.MessageRef,
+) (*api.Message, error) {
 	text := created.Spec.Body.Render(s.replyPrompt(conv.Spec.Channel), created.Spec.AwaitReply)
 	if len(created.Spec.Choices) > 0 {
 		text = api.RenderDraft(created.Spec.Body, created.Spec.DraftedBy, created.Spec.Choices,
@@ -96,6 +114,7 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 	}
 
 	now := time.Now().UTC()
+	held := created.Status.Phase == api.PhaseHeld
 	created.Status.Phase = api.PhaseSent
 	created.Status.Ref = ref.ID
 	created.Status.SentAt = &now
@@ -106,7 +125,8 @@ func (s *Service) Send(ctx context.Context, m *api.Message) (*api.Message, error
 
 	s.touchConversation(conv.Metadata.Name, func(c *api.Conversation) {
 		c.Status.MessageCount++
-		if sent.Spec.AwaitReply {
+		if sent.Spec.AwaitReply && !held {
+			// A held question was already the pending one, since it was held.
 			c.Status.PendingQuestion = sent.Metadata.Name
 			c.Status.PendingQuestionSince = sent.Status.SentAt
 		}

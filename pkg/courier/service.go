@@ -88,6 +88,7 @@ func (s *Service) Start(ctx context.Context) error {
 			s.log.Error("channel did not start", "channel", ch.Metadata.Name, "err", err)
 		}
 	}
+	s.resumeReviews()
 	return nil
 }
 

@@ -86,6 +86,9 @@ const (
 	PhaseClosed Phase = "Closed"
 	// PhaseFailed: the backend refused, and retrying will not help by itself.
 	PhaseFailed Phase = "Failed"
+	// PhaseHeld: a question recorded and open, waiting for the channel's
+	// reviewer to publish or answer it before the reader sees it.
+	PhaseHeld Phase = "Held"
 )
 
 // Channel is one configured transport: a backend plus where it delivers.
@@ -104,6 +107,15 @@ type Channel struct {
 type ChannelSpec struct {
 	// Backend names a registered backend implementation, e.g. "telegram".
 	Backend string `json:"backend"`
+	// Reviewer, when set, names a conversation whose agent sees every
+	// question on this channel before the reader does: it answers what it
+	// can, rewrites what it publishes, and only the rest reaches the human.
+	// The reviewer's own questions are not held.
+	Reviewer string `json:"reviewer,omitempty"`
+	// ReviewTimeoutSeconds is how long a held question waits for the
+	// reviewer before it is published as it is. Default 600. A reviewer
+	// that is down must cost the reader a delay, never a lost question.
+	ReviewTimeoutSeconds int `json:"reviewTimeoutSeconds,omitempty"`
 	// Config is the backend's own configuration, validated by that backend.
 	Config json.RawMessage `json:"config,omitempty"`
 }
@@ -365,6 +377,21 @@ type MessageStatus struct {
 	Approval *Approval `json:"approval,omitempty"`
 	// Message explains a Failed or Cancelled phase.
 	Message string `json:"message,omitempty"`
+	// Review records what the channel's reviewer did with a held question.
+	Review *Review `json:"review,omitempty"`
+}
+
+// Review is what became of a held question.
+type Review struct {
+	// Action is "published", "answered" or "timeout" (published as it was
+	// because the reviewer did not act in time).
+	Action string `json:"action"`
+	// By names the reviewer.
+	By string `json:"by,omitempty"`
+	// Original is what the agent wrote, kept when the reviewer rewrote it for
+	// the reader, so the record shows both.
+	Original *Body      `json:"original,omitempty"`
+	At       *time.Time `json:"at,omitempty"`
 }
 
 // Answered reports whether a question has its answer.
@@ -378,7 +405,7 @@ func (m *Message) Open() bool {
 		return false
 	}
 	switch m.Status.Phase {
-	case PhasePending, PhaseSent:
+	case PhasePending, PhaseSent, PhaseHeld:
 		return true
 	default:
 		return false
