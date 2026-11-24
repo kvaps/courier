@@ -251,11 +251,11 @@ They are deliberately symmetric: one reaches the human, one reaches the machine,
 
 **`pkg/agent` — delivery into an agent.** Push a message to the machine side of a conversation. Without one, an agent only sees your message the next time it calls `receive`, which for an agent in the middle of a long turn can be a while.
 
-`pkg/agent/claude` speaks the local Claude Code daemon's control socket — the same socket and ops the `claude` CLI uses to hand text to a background session. Three things make it the right channel:
+`pkg/agent/claude` delivers through Claude Code's own hooks — nothing types into a terminal and nothing speaks an undocumented socket:
 
-- **It needs no approval.** The daemon's reply handler either delivers or returns `ENOJOB` / `ERESPAWNING` / `ENOREPLY`; it raises no dialog. The approval prompt you may have seen — `approve message from uds:/tmp/cc-socks/…` — belongs to Claude Code's peer-to-peer session inbox, which gates unknown writers on purpose. courier does not speak that protocol: a channel you have to approve message by message is not a channel.
-- **It reaches sessions that are not running.** A stopped-but-resumable session is woken in place, keeping its history, before the message is delivered.
-- **It confirms delivery against the session's own transcript.** An acknowledgement only means the text reached an input box; a long message lands there as an unsubmitted paste. courier looks for the message in the session's conversation, presses Enter if it is not there, and refuses to press Enter at all when a dialog holds the keyboard — a blind Enter on the resume dialog would accept "compact this conversation" and discard the message with it.
+- **A message goes into the session's mailbox** (`~/.courier/mailbox.json`, so it survives a restart).
+- **The session collects it.** Every session runs an `asyncRewake` hook that long-polls `POST /api/v1/sessions/{session}/collect` and, when a letter is there, exits with code 2 — which Claude Code documents as waking the session, even an idle one, and handing it the hook's output. The hook is started on `SessionStart`, `UserPromptSubmit` and `Stop`, one per session, so a busy session collects mid-turn and an idle one right away. The hook lives in the orchestrator's repository (`hooks/attention_hook.py`) and is installed in the user's `settings.json`.
+- **A session nobody collects for within 20 seconds** is looked up with `claude agents --json`. A busy one is left alone — its next hook collects. An idle or stopped one is restarted with `claude respawn`, which keeps its id and history, and its `SessionStart` hook collects. If even that does not collect within 90 seconds, the delivery fails and you are told in the thread.
 
 courier does not impersonate a session. It could — the sender identity Claude Code exposes is just environment variables — but the return address would be a lie, and the agent would answer into something nobody is listening on. It writes a plain envelope instead, naming you and the tool to answer with.
 

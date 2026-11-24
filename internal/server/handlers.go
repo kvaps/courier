@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kvaps/courier/pkg/agent"
 	"github.com/kvaps/courier/pkg/api"
 	"github.com/kvaps/courier/pkg/courier"
 )
@@ -267,4 +268,30 @@ func (s *Server) answerMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// collect is what a Claude Code session's hook long-polls for its mailbox.
+func (s *Server) collect(w http.ResponseWriter, r *http.Request) {
+	wait := 50 * time.Second
+	if v := r.URL.Query().Get("wait"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, api.NewInvalid("wait must be a number of seconds"))
+			return
+		}
+		wait = min(time.Duration(n)*time.Second, 55*time.Second)
+	}
+	sink := r.URL.Query().Get("sink")
+	if sink == "" {
+		sink = "claude"
+	}
+	letters, err := s.svc.Collect(r.Context(), sink, r.PathValue("session"), wait)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if letters == nil {
+		letters = []agent.Letter{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"letters": letters})
 }

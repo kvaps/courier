@@ -16,6 +16,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/kvaps/courier/pkg/api"
 )
@@ -117,4 +118,18 @@ func Kinds() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Letter is one message waiting in a session's mailbox.
+type Letter struct {
+	ID           int64     `json:"id"`
+	Conversation string    `json:"conversation,omitempty"`
+	Text         string    `json:"text"`
+	At           time.Time `json:"at"`
+}
+
+// Collector is a sink whose sessions collect their own messages — a hook in
+// the session long-polls for its mailbox rather than having text typed into it.
+type Collector interface {
+	Collect(ctx context.Context, session string, wait time.Duration) []Letter
 }

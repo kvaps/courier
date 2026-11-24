@@ -76,6 +76,7 @@ func New(opts Options) *Server {
 	mux.HandleFunc("POST /api/v1/messages/{name}/cancel", s.cancelMessage)
 	mux.HandleFunc("POST /api/v1/messages/{name}/draft", s.draftMessage)
 	mux.HandleFunc("POST /api/v1/messages/{name}/publish", s.publishMessage)
+	mux.HandleFunc("POST /api/v1/sessions/{session}/collect", s.collect)
 	mux.HandleFunc("POST /api/v1/messages/{name}/answer", s.answerMessage)
 	mux.HandleFunc("GET /api/v1/messages/{name}/answer", s.awaitAnswer)
 
@@ -278,6 +279,7 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 		"version":    s.version,
 		"endpoints": []endpoint{
 			{"GET", "/api/healthz", "Daemon health and per-channel readiness."},
+			{"POST", "/api/v1/sessions/{session}/collect", "A session's hook: take its mailbox, waiting up to ?wait=N seconds (max 55) for something to arrive."},
 			{"POST", "/api/v1/messages/{name}/publish", "Reviewer: show a held question to the reader, optionally rewritten ({by, body})."},
 			{"POST", "/api/v1/messages/{name}/answer", "Reviewer: answer an open question on the reader's behalf ({text, by})."},
 			{"GET", "/api/v1/channels", "List transports. Add ?watch=true&resourceVersion=N to stream changes."},

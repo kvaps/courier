@@ -302,3 +302,17 @@ func (s *Service) replyPrompt(channel string) string {
 	}
 	return api.DefaultReplyPrompt
 }
+
+// Collect hands a session the messages waiting for it, waiting up to wait for
+// one to arrive. It is what a session's own hook long-polls.
+func (s *Service) Collect(ctx context.Context, sinkKind, session string, wait time.Duration) ([]agent.Letter, error) {
+	sk, err := s.sinkFor(sinkKind)
+	if err != nil {
+		return nil, err
+	}
+	c, ok := sk.(agent.Collector)
+	if !ok {
+		return nil, api.NewInvalid("agent sink %q does not hold mailboxes", sinkKind)
+	}
+	return c.Collect(ctx, session, wait), nil
+}
