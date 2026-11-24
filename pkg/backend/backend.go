@@ -308,3 +308,10 @@ type BoardItem struct {
 	// Ref is where the item can be opened, if it was ever shown.
 	Ref MessageRef
 }
+
+// Sweeper is a backend that clears settled items out of the reader's view. It
+// is handed the references of questions still open, which are never cleared;
+// what it removes is the view only — the record stays in the daemon's store.
+type Sweeper interface {
+	Sweep(ctx context.Context, open map[string]bool) error
+}

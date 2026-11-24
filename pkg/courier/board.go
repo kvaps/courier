@@ -47,6 +47,13 @@ func (s *Service) updateBoards(last map[string]string) {
 			continue
 		}
 		board := s.board(name, time.Now())
+		if sw, ok := be.(backend.Sweeper); ok {
+			ctx, cancel := context.WithTimeout(s.baseCtx, 30*time.Second)
+			if err := sw.Sweep(ctx, s.openRefs(name)); err != nil {
+				s.log.Warn("could not sweep the feed", "channel", name, "err", err)
+			}
+			cancel()
+		}
 		raw, _ := json.Marshal(board)
 		if last[name] == string(raw) {
 			continue
@@ -106,5 +113,32 @@ func (s *Service) board(channel string, now time.Time) backend.Board {
 	}
 	sort.Slice(out.Waiting, func(i, j int) bool { return out.Waiting[i].Since.Before(out.Waiting[j].Since) })
 	sort.Slice(out.Settled, func(i, j int) bool { return out.Settled[i].Since.After(out.Settled[j].Since) })
+	return out
+}
+
+// openRefs is the transport references of every question on a channel that is
+// still open or held, which a sweep must never clear.
+func (s *Service) openRefs(channel string) map[string]bool {
+	out := map[string]bool{}
+	convs, _, err := s.conversations.List()
+	if err != nil {
+		return out
+	}
+	mine := map[string]bool{}
+	for i := range convs {
+		if convs[i].Spec.Channel == channel {
+			mine[convs[i].Metadata.Name] = true
+		}
+	}
+	msgs, _, err := s.messages.List()
+	if err != nil {
+		return out
+	}
+	for i := range msgs {
+		m := &msgs[i]
+		if mine[m.Spec.Conversation] && (m.Open() || m.DraftOpen()) && m.Status.Ref != "" {
+			out[m.Status.Ref] = true
+		}
+	}
 	return out
 }

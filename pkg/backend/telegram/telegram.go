@@ -67,6 +67,10 @@ type Config struct {
 	// way to start a conversation rather than answer one. Typically the
 	// orchestrator's. Unset, such posts are ignored.
 	DefaultConversation string `json:"defaultConversation,omitempty"`
+	// RetentionHours is how long a post with no open question and no new
+	// comment stays in the channel before it is deleted. Default 12. The
+	// record stays in courier; the channel is a working feed, not an archive.
+	RetentionHours int `json:"retentionHours,omitempty"`
 	// PollTimeout is the getUpdates long-poll timeout in seconds.
 	PollTimeout int `json:"pollTimeout,omitempty"`
 	// Transcribe, when set, turns voice messages into words. Without it a voice
@@ -287,6 +291,9 @@ func (b *Backend) Send(ctx context.Context, ref backend.ThreadRef, out backend.O
 					"is the bot an administrator of the discussion group?", under)
 		}
 		copyID = c
+	}
+	if under > 0 && first.Zero() {
+		b.feed.touch(under) // a new comment is new activity under the post
 	}
 	if text != "" {
 		id, err := b.sendText(ctx, group, text, copyID, markup, true)

@@ -64,6 +64,7 @@ The chat is a **channel with a discussion group linked** (channel settings → E
 - **An answered or withdrawn question is rewritten in place**, so the feed shows at a glance what is still open.
 - **A post you write in the channel yourself** — text, voice or a forward — starts a conversation of your own. It goes to the channel's `defaultConversation` (typically the orchestrator's), and so does every reply under it; the agent's answer lands in that post's comments. Without `defaultConversation` such posts are ignored.
 - **Text is sent as Markdown** (Bot API rich messages), so the bold, lists, tables and code agents write arrive formatted. If Telegram refuses the markup, the same text goes out plain: a stray character costs the formatting, never the message.
+- **Settled posts leave the feed.** A post with no open question and nothing new written under it for `retentionHours` (default 12) is deleted, and its comment thread with it. Open questions and the board are never swept. The record stays in courier — the channel is a working feed, not an archive. Telegram lets a bot delete only messages younger than 48 hours; a post that settles later is kept, already rewritten as settled.
 - A comment written outside any post's thread is not delivered anywhere; the bot replies asking you to write under the post, or to start a post in the channel.
 - Commenting as an anonymous administrator works: Telegram reports such a message as written by the group, which only an administrator can do.
 

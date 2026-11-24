@@ -343,6 +343,13 @@ func (a *botAPI) pinChatMessage(ctx context.Context, chatID int64, messageID int
 	}, nil)
 }
 
+func (a *botAPI) deleteMessage(ctx context.Context, chatID int64, messageID int) error {
+	return a.call(ctx, "deleteMessage", url.Values{
+		"chat_id":    {strconv.FormatInt(chatID, 10)},
+		"message_id": {strconv.Itoa(messageID)},
+	}, nil)
+}
+
 // isBadRequest reports a 400: the content was refused, as opposed to the
 // transport failing or asking to wait.
 func isBadRequest(err error) bool {

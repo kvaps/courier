@@ -51,6 +51,12 @@ type feedPost struct {
 	Copy   int       `json:"copy,omitempty"`
 	Header string    `json:"header,omitempty"`
 	At     time.Time `json:"at"`
+	// Created is when the post was made; Telegram lets a bot delete only
+	// what is younger than 48 hours.
+	Created time.Time `json:"created,omitempty"`
+	// Kept marks a post the sweep tried and failed to delete, so it is not
+	// retried every pass. It stays, rewritten as settled.
+	Kept bool `json:"kept,omitempty"`
 }
 
 type feedState struct {
@@ -114,7 +120,8 @@ func (f *feed) save() {
 func (f *feed) addPost(id int, thread, header string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.st.Posts[id] = &feedPost{Thread: thread, Header: header, At: time.Now().UTC()}
+	now := time.Now().UTC()
+	f.st.Posts[id] = &feedPost{Thread: thread, Header: header, At: now, Created: now}
 	f.st.Last[thread] = id
 	f.save()
 	f.copied.Broadcast()
@@ -324,4 +331,41 @@ func (f *feed) setBoard(id int, thread string) {
 	}
 	f.save()
 	f.copied.Broadcast()
+}
+
+// stale lists posts idle for longer than d, excluding the board and kept ones.
+func (f *feed) stale(d time.Duration) []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []int
+	for id, p := range f.st.Posts {
+		if id == f.st.Board || p.Kept || time.Since(p.At) < d {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// forget drops a deleted post from every map.
+func (f *feed) forget(id int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p, ok := f.st.Posts[id]; ok {
+		delete(f.st.Copies, p.Copy)
+		if f.st.Last[p.Thread] == id {
+			delete(f.st.Last, p.Thread)
+		}
+	}
+	delete(f.st.Posts, id)
+	f.save()
+}
+
+func (f *feed) keep(id int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p, ok := f.st.Posts[id]; ok {
+		p.Kept = true
+	}
+	f.save()
 }
